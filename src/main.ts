@@ -1,67 +1,52 @@
-import * as THREE from 'three';
-import { World } from './sim/world';
+import { Game } from './game';
 import { DEFAULT_SEED, COURSE_LENGTH } from './sim/constants';
-import { makeSample } from './sim/course';
-import { buildTerrainGeometry } from './render/terrainMesh';
-import { buildTrailGeometry } from './render/trailMesh';
+import { neutralInput, type RiderInput } from './sim/bike';
 
 const params = new URLSearchParams(location.search);
 const seed = params.get('seed') ?? DEFAULT_SEED;
 const capture = params.get('capture') === '1';
 
 const app = document.getElementById('app')!;
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(1);
-renderer.setSize(window.innerWidth, window.innerHeight);
-app.appendChild(renderer.domElement);
+const game = new Game(app, { seed, capture });
 
-const world = new World(seed);
+if (capture) game.paused = true;
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xf4f1ea);
-scene.add(new THREE.Mesh(buildTerrainGeometry(world), new THREE.MeshBasicMaterial({ color: 0x8a8f8a, wireframe: true })));
-scene.add(new THREE.Mesh(buildTrailGeometry(world), new THREE.MeshBasicMaterial({ color: 0x1a1a1a, wireframe: true })));
-
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 6000);
-let debugS = 40;
-function placeCamera(): void {
-  const c = world.course;
-  const y = c.surfaceHeight(debugS, 0);
-  const i = c.idx(debugS);
-  camera.position.set(c.centreX(debugS) - c.tx[i] * 22, y + 12, c.centreZ(debugS) - c.tz[i] * 22);
-  camera.lookAt(c.centreX(debugS + 30), c.surfaceHeight(debugS + 30, 0) + 1, c.centreZ(debugS + 30));
-}
-placeCamera();
-
-addEventListener('resize', () => {
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-});
-
-let frames = 0;
-function frame(): void {
-  frames++;
-  placeCamera();
-  renderer.render(scene, camera);
+function frame(now: number): void {
+  game.advance(now);
+  game.render();
+  game.input.endFrame();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
 if (capture) {
-  const smp = makeSample();
+  const scripted: RiderInput = neutralInput();
+  game.input.scripted = scripted;
   (window as unknown as Record<string, unknown>).__INKFALL = {
     ready: true,
     seed,
-    frames: () => frames,
     courseLength: COURSE_LENGTH,
-    controlPointCount: world.course.controlPoints.length,
-    erodedDroplets: world.terrain.erodedDroplets,
-    seek(progress: number) { debugS = progress * COURSE_LENGTH; },
-    sample(s: number, lateral: number) { return { ...world.course.sample(s, lateral, smp) }; },
-    centre(s: number) { return { x: world.course.centreX(s), y: world.course.centreY(s), z: world.course.centreZ(s) }; },
-    terrainHeight(x: number, z: number) { return world.terrain.heightAt(x, z); },
-    nearest(x: number, z: number) { return world.course.nearest(x, z); },
-    cps: world.course.controlPoints,
+    controlPointCount: game.world.course.controlPoints.length,
+    erodedDroplets: game.world.terrain.erodedDroplets,
+    start() { game.paused = false; game.player.phase = 'riding'; },
+    reset(s?: string) { game.restart(s); Object.assign(scripted, neutralInput()); },
+    seek(progress: number) {
+      const target = Math.max(0, Math.min(1, progress)) * COURSE_LENGTH;
+      game.player.reset(target);
+      game.player.phase = 'riding';
+      game.director.reset();
+      game.stepFrames(1, scripted);
+    },
+    step(frames: number) { game.stepFrames(frames, scripted); },
+    input(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
+    setInput(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
+    state() { return game.state(); },
+    dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
+    sample(s: number, lateral: number) { return { ...game.world.course.sample(s, lateral, game.world.sample(s, lateral)) }; },
+    centre(s: number) {
+      const c = game.world.course;
+      return { x: c.centreX(s), y: c.centreY(s), z: c.centreZ(s) };
+    },
+    terrainHeight(x: number, z: number) { return game.world.terrain.heightAt(x, z); },
   };
 }
