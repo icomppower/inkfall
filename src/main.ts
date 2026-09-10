@@ -42,6 +42,7 @@ if (capture) {
     setInput(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
+    analyzeFrame() { game.render(); return game.analyzeFrame(); },
     sample(s: number, lateral: number) { return { ...game.world.course.sample(s, lateral, game.world.sample(s, lateral)) }; },
     centre(s: number) {
       const c = game.world.course;

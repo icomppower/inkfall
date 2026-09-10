@@ -71,6 +71,17 @@ export class Director {
     const desired = makePose();
     this.chaseTarget(rider, desired);
     this.applySpring(dt, desired, 6.5);
+    this.liftAboveGround();
+  }
+
+  /** Never let a shot end up inside a cut bank. */
+  protected liftAboveGround(clearance = 2.1): void {
+    const p = this.pose;
+    const ground = this.world.terrain.heightAt(p.px, p.pz);
+    if (p.py < ground + clearance) {
+      p.py = ground + clearance;
+      if (this.vy < 0) this.vy = 0;
+    }
   }
 
   /** Critically damped follow, integrated at the fixed step so it stays deterministic. */

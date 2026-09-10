@@ -141,12 +141,12 @@ export class Heightfield {
    */
   private carveCourse(course: Course): void {
     const CORRIDOR = 4.0;      // metres of apron beyond the trail edge
-    const BLEND = 62;
+    const BLEND = 42;
     // A query point inside a cell is at most cell*sqrt(2) from any of its corners, so a
     // corner carved to the lowest trail surface within that radius can never interpolate
     // above the trail. This is what stops coarse triangles covering the apron.
     const REACH = this.cell * Math.SQRT2 * 1.15;
-    const MARGIN = 0.32;
+    const MARGIN = 0.14;
     const scratch: number[] = [];
     const gi = course.idx(RAVINE_S);
     const gorgeX = course.centreX(RAVINE_S), gorgeZ = course.centreZ(RAVINE_S);

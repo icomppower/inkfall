@@ -26,65 +26,92 @@ export interface SampleOut {
 
 interface CurveSeg { len: number; kappa: number; }
 
-/** Curvature schedule: the course design, expressed as signed radius per run of metres. */
-function curvatureSchedule(rng: Rng): CurveSeg[] {
-  const segs: CurveSeg[] = [];
-  const push = (len: number, kappa: number) => { if (len > 0) segs.push({ len, kappa }); };
-
-  // 1. 雷達站 — five tight tarmac switchbacks, alternating hairpins on a concrete apron.
-  push(26, 0);
+/**
+ * Curvature schedule: the course design, one run of segments per section. Each section's
+ * schedule is normalised onto that section's own arc length so the designed features stay
+ * where the section table says they are.
+ */
+function curvatureSchedule(rng: Rng): CurveSeg[][] {
+  const perSection: CurveSeg[][] = [];
   let dir = rng.next() < 0.5 ? 1 : -1;
-  for (let i = 0; i < 5; i++) {
-    const r = rng.range(12.5, 15.5);
-    const sweep = rng.range(2.85, 3.05);      // ~165°
-    push(r * sweep, dir / r);
-    push(rng.range(22, 33), 0);
-    dir = -dir;
-  }
+  const run = (build: (push: (len: number, kappa: number) => void) => void): void => {
+    const segs: CurveSeg[] = [];
+    build((len, kappa) => { if (len > 0) segs.push({ len, kappa }); });
+    perSection.push(segs);
+  };
+
+  // 1. 雷達站 — five tarmac switchbacks off the radar apron. Wide enough hairpins that
+  //    the hillside between two legs stays a slope and not a wall.
+  run((push) => {
+    push(30, 0);
+    for (let i = 0; i < 5; i++) {
+      const r = rng.range(16.5, 19.5);
+      push(r * rng.range(2.85, 3.05), dir / r);   // ~170° hairpin
+      push(rng.range(30, 42), 0);
+      dir = -dir;
+    }
+  });
 
   // 2. 芒草坡 — long fast sweepers on an exposed ridge.
-  for (let i = 0; i < 6; i++) {
-    const r = rng.range(70, 135);
-    push(rng.range(55, 95), dir / r);
-    push(rng.range(16, 34), 0);
-    dir = -dir;
-  }
+  run((push) => {
+    for (let i = 0; i < 6; i++) {
+      const r = rng.range(70, 135);
+      push(rng.range(55, 95), dir / r);
+      push(rng.range(16, 34), 0);
+      dir = -dir;
+    }
+  });
 
   // 3. 石澗 — the stream bed wanders; wide radii, boulder-forced kinks.
-  for (let i = 0; i < 7; i++) {
-    const r = rng.range(95, 210);
-    push(rng.range(38, 70), dir / r);
-    push(rng.range(12, 26), 0);
-    if (rng.next() < 0.6) dir = -dir;
-  }
+  run((push) => {
+    for (let i = 0; i < 7; i++) {
+      const r = rng.range(95, 210);
+      push(rng.range(38, 70), dir / r);
+      push(rng.range(12, 26), 0);
+      if (rng.next() < 0.6) dir = -dir;
+    }
+  });
 
   // 4. 茶園 — the jump line wants straight run-ups; bends only between tabletops.
-  for (let i = 0; i < 5; i++) {
-    push(rng.range(52, 78), 0);
-    push(rng.range(24, 40), dir / rng.range(120, 240));
-    dir = -dir;
-  }
+  run((push) => {
+    for (let i = 0; i < 5; i++) {
+      push(rng.range(52, 78), 0);
+      push(rng.range(24, 40), dir / rng.range(120, 240));
+      dir = -dir;
+    }
+  });
 
   // 5. 竹林峽 — bamboo forces a tight line, but the ravine approach is dead straight.
-  for (let i = 0; i < 5; i++) {
-    push(rng.range(30, 52), dir / rng.range(60, 130));
-    push(rng.range(22, 44), 0);
-    dir = -dir;
-  }
+  run((push) => {
+    for (let i = 0; i < 5; i++) {
+      push(rng.range(30, 52), dir / rng.range(60, 130));
+      push(rng.range(22, 44), 0);
+      dir = -dir;
+    }
+  });
 
   // 6. 川龍村 — village lane, almost straight to the banner.
-  for (let i = 0; i < 3; i++) {
-    push(rng.range(45, 75), dir / rng.range(150, 300));
-    push(rng.range(18, 32), 0);
-    dir = -dir;
-  }
-  return segs;
+  run((push) => {
+    for (let i = 0; i < 3; i++) {
+      push(rng.range(45, 75), dir / rng.range(150, 300));
+      push(rng.range(18, 32), 0);
+      dir = -dir;
+    }
+  });
+  return perSection;
 }
 
-function kappaAt(segs: CurveSeg[], s: number): number {
+/** Curvature at arc position s, with each section's schedule stretched onto that section. */
+function kappaAtSection(perSection: CurveSeg[][], s: number): number {
+  const sec = sectionAt(s);
+  const segs = perSection[sec.index];
+  const total = segs.reduce((a, b) => a + b.len, 0) || 1;
+  const secLen = sec.end - sec.start;
+  const scale = secLen / total;          // schedule metres → course metres
+  const local = (s - sec.start) / scale;
   let acc = 0;
   for (const seg of segs) {
-    if (s < acc + seg.len) return seg.kappa;
+    if (local < acc + seg.len) return seg.kappa / scale;
     acc += seg.len;
   }
   return 0;
@@ -140,9 +167,7 @@ export class Course {
   }
 
   /** Walk the curvature schedule at 1 m steps to get the plan-view centreline. */
-  private integratePlan(segs: CurveSeg[], rng: Rng): { x: number; z: number; y: number; k: number }[] {
-    const total = segs.reduce((a, b) => a + b.len, 0);
-    const scale = COURSE_LENGTH / total;         // stretch the schedule onto 2300 m
+  private integratePlan(perSection: CurveSeg[][], rng: Rng): { x: number; z: number; y: number; k: number }[] {
     const zones = straightenZones();
     const wobble = new Noise2D(`wobble:${seed_(rng)}`);
 
@@ -169,7 +194,7 @@ export class Course {
     const out: { x: number; z: number; y: number; k: number }[] = [];
     let px = 0, pz = 0, theta = 0;
     for (let s = 0; s <= COURSE_LENGTH; s++) {
-      let k = kappaAt(segs, s / scale) * scale;
+      let k = kappaAtSection(perSection, s);
       // Micro-wander so straights never read as CAD lines.
       k += 0.0016 * wobble.fbm(s * 0.0071, 3.1, 2);
       for (const z of zones) {

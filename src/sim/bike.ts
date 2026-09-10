@@ -38,8 +38,8 @@ export const TRICKS: Record<number, TrickDef> = {
 export const WHEEL_R = 0.33;
 export const RIDE_HEIGHT = 0.30;
 export const MAX_TRAVEL = 0.22;
-export const SPRING_K = 19000;      // N/m per wheel — a 1 m drop peaks at ~60% travel
-export const DAMP_C = 780;          // N·s/m per wheel
+export const SPRING_K = 21000;      // N/m per wheel — a 1 m drop peaks at ~60% travel
+export const DAMP_C = 880;          // N·s/m per wheel
 const MASS = 92;             // kg, rider + bike
 
 const PEDAL_ACCEL = 5.2;

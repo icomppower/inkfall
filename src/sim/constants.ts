@@ -42,12 +42,12 @@ export interface SectionDef {
 }
 
 export const SECTIONS: SectionDef[] = [
-  { index: 0, start: 0,    end: 350,  zh: '雷達站',   en: 'Radar Station',  surface: 'tarmac',   width: 8.0,  drop: 90 },
-  { index: 1, start: 350,  end: 800,  zh: '芒草坡',   en: 'Silvergrass Ridge', surface: 'hardpack', width: 7.0, drop: 70 },
-  { index: 2, start: 800,  end: 1200, zh: '石澗',     en: 'Stream Bed',     surface: 'rock',     width: 9.0,  drop: 80 },
-  { index: 3, start: 1200, end: 1650, zh: '茶園',     en: 'Tea Terraces',   surface: 'dirt',     width: 10.0, drop: 85 },
-  { index: 4, start: 1650, end: 2050, zh: '竹林峽',   en: 'Bamboo Gap',     surface: 'dirt',     width: 6.5,  drop: 70 },
-  { index: 5, start: 2050, end: 2300, zh: '川龍村',   en: 'Cheung Lung Village', surface: 'stone', width: 5.5, drop: 25 },
+  { index: 0, start: 0,    end: 350,  zh: '雷達站',   en: 'Radar Station',  surface: 'tarmac',   width: 8.0,  drop: 45 },
+  { index: 1, start: 350,  end: 800,  zh: '芒草坡',   en: 'Silvergrass Ridge', surface: 'hardpack', width: 7.0, drop: 78 },
+  { index: 2, start: 800,  end: 1200, zh: '石澗',     en: 'Stream Bed',     surface: 'rock',     width: 9.0,  drop: 82 },
+  { index: 3, start: 1200, end: 1650, zh: '茶園',     en: 'Tea Terraces',   surface: 'dirt',     width: 10.0, drop: 92 },
+  { index: 4, start: 1650, end: 2050, zh: '竹林峽',   en: 'Bamboo Gap',     surface: 'dirt',     width: 6.5,  drop: 88 },
+  { index: 5, start: 2050, end: 2300, zh: '川龍村',   en: 'Cheung Lung Village', surface: 'stone', width: 5.5, drop: 35 },
 ];
 
 /** Split gates. Five checkpoints (section entries 1..5) plus the finish line. */

@@ -6,6 +6,11 @@ import { InputSource } from './input';
 import { FIXED_DT, MAX_CATCHUP_STEPS, CHECKPOINTS, COURSE_LENGTH, GRAVITY, DEFAULT_SEED } from './sim/constants';
 import { buildTerrainGeometry } from './render/terrainMesh';
 import { buildTrailGeometry } from './render/trailMesh';
+import { InkPipeline } from './render/pipeline';
+import { makeInkMaterial, makeHullMaterial } from './render/inkExports';
+import { makeHatchTexture } from './render/hatch';
+import { makeSky } from './render/sky';
+import { analyzeCanvas } from './render/analyze';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
 
@@ -17,6 +22,9 @@ export class Game {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(60, 1, 0.35, 6000);
+
+  pipeline: InkPipeline;
+  sky: THREE.Mesh;
 
   seed: string;
   paused = false;
@@ -36,17 +44,29 @@ export class Game {
     this.director = new Director(this.world);
     this.input = new InputSource();
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: opts.capture === true,
+    });
     this.renderer.setPixelRatio(1);
+    this.renderer.autoClear = false;
     parent.appendChild(this.renderer.domElement);
 
-    this.scene.background = new THREE.Color(0xf4f1ea);
+    this.pipeline = new InkPipeline(this.renderer);
+    this.pipeline.shared.uHatch.value = makeHatchTexture(this.seed);
+    this.sky = makeSky(this.pipeline.shared);
+
+    this.scene.background = null;
+    this.scene.add(this.sky);
     this.scene.add(this.group);
     this.buildScene();
+
     this.bikeProxy = new THREE.Mesh(
-      new THREE.BoxGeometry(0.55, 0.95, 1.75),
-      new THREE.MeshBasicMaterial({ color: 0x141414 }),
+      new THREE.BoxGeometry(0.5, 0.92, 1.72),
+      makeInkMaterial(this.pipeline.shared, { rampOffset: -0.14, tone: 0.55 }),
     );
+    this.bikeProxy.add(new THREE.Mesh(this.bikeProxy.geometry, makeHullMaterial(this.pipeline.shared, 0.045)));
     this.group.add(this.bikeProxy);
 
     this.resize();
@@ -54,19 +74,21 @@ export class Game {
   }
 
   private buildScene(): void {
+    const shared = this.pipeline.shared;
     this.group.add(new THREE.Mesh(
       buildTerrainGeometry(this.world),
-      new THREE.MeshBasicMaterial({ color: 0xb9b7ae, wireframe: true }),
+      makeInkMaterial(shared, { rampOffset: 0.03, tone: 1.02, wetBand: 0.35, slope: true }),
     ));
     this.group.add(new THREE.Mesh(
       buildTrailGeometry(this.world),
-      new THREE.MeshBasicMaterial({ color: 0x6e6a63 }),
+      makeInkMaterial(shared, { rampOffset: -0.06, tone: 0.74, wetBand: 0.9, surfaceId: true }),
     ));
   }
 
   resize(): void {
     const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
     this.renderer.setSize(w, h, false);
+    this.pipeline.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -163,29 +185,45 @@ export class Game {
     if (steps === MAX_CATCHUP_STEPS) this.accumulator = 0;   // capped catch-up
   }
 
+  private focus = new THREE.Vector3();
+
   render(): void {
     this.applyCamera();
     this.syncProxy();
-    this.renderer.render(this.scene, this.camera);
+    this.pipeline.shared.uTime.value = this.simTime;
+    this.pipeline.post.uniforms.uTime.value = this.simTime;
+    this.focus.copy(this.bikeProxy.position);
+    this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
+    this.pipeline.render(this.scene, this.camera, this.focus, [this.sky]);
     this.frames++;
     if (this.firstFrameAt === 0) this.firstFrameAt = performance.now();
   }
 
+  analyzeFrame(): ReturnType<typeof analyzeCanvas> {
+    return analyzeCanvas(this.renderer.domElement);
+  }
+
   /** Isolated suspension probe: equivalent of dropping the bike from `h` metres. */
-  dropTest(h: number, k?: number, c?: number): { peakCompression: number; settleSteps: number } {
-    const probe = new Rider(this.world, 'probe');
-    if (k !== undefined) probe.springK = k;
-    if (c !== undefined) probe.dampC = c;
-    probe.reset(1310);
-    probe.vy = -Math.sqrt(2 * GRAVITY * h);
+  dropTest(h: number, k?: number, c?: number): { peakCompression: number; samples: number[] } {
+    // Averaged over several places on the course: a single spot lands on one particular
+    // micro-bump and turns a suspension measurement into a noise measurement.
+    const spots = [420, 700, 1215, 1330, 2150];
+    const samples: number[] = [];
     const inp = neutralInput();
-    let peak = 0, settle = 0;
-    for (let i = 0; i < 360; i++) {
-      probe.step(FIXED_DT, inp);
-      const c = Math.max(probe.compressionF, probe.compressionR);
-      if (c > peak) { peak = c; settle = i; }
+    for (const spot of spots) {
+      const probe = new Rider(this.world, 'probe');
+      if (k !== undefined) probe.springK = k;
+      if (c !== undefined) probe.dampC = c;
+      probe.reset(spot);
+      probe.vy = -Math.sqrt(2 * GRAVITY * h);
+      let peak = 0;
+      for (let i = 0; i < 300; i++) {
+        probe.step(FIXED_DT, inp);
+        peak = Math.max(peak, probe.compressionF, probe.compressionR);
+      }
+      samples.push(+peak.toFixed(4));
     }
-    return { peakCompression: peak, settleSteps: settle };
+    return { peakCompression: samples.reduce((a, b) => a + b, 0) / samples.length, samples };
   }
 
   state(): Record<string, unknown> {
@@ -235,8 +273,9 @@ export class Game {
         shot: this.director.shot,
         cuts: this.director.cuts.length,
         fov: +this.director.pose.fov.toFixed(2),
-        drawCalls: this.renderer.info.render.calls,
-        triangles: this.renderer.info.render.triangles,
+        drawCalls: this.pipeline.geoCalls,
+        triangles: this.pipeline.geoTriangles,
+        dpr: this.pipeline.dpr,
       },
       riders: [],
     };

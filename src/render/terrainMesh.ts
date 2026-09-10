@@ -21,7 +21,7 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
       const z = hf.z0 + j * hf.cell;
       const mask = hf.trailMask[k];
       // Sink masked vertices under the trail ribbon: the ribbon is what the rider sees.
-      const y = hf.h[k] - mask * 0.18;
+      const y = hf.h[k] - mask * 0.05;
       positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
       uvs[k * 2] = i / (n - 1); uvs[k * 2 + 1] = j / (n - 1);
     }
