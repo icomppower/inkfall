@@ -63,12 +63,14 @@ export const TABLETOPS: TabletopDef[] = [
 ];
 export const STEP_DOWN_S = 1614;
 export const STEP_DOWN_DROP = 2.5;
+/** Length of the landing ramp under the terrace wall — a rideable 27°, not a cliff. */
+export const STEP_DOWN_RUN = 5.0;
 
 /** Bamboo-gap ravine — 14 m of nothing, mandatory hop timing. */
 export const RAVINE_S = 1884;
 export const RAVINE_WIDTH = 14;
 export const RAVINE_LIP_RUN = 9.0;
-export const RAVINE_LIP_RISE = 2.3;
+export const RAVINE_LIP_RISE = 2.0;
 export const RAVINE_DEPTH = 26;
 
 /** Wooden footbridge over the stream below the gap. */

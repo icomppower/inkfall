@@ -2,7 +2,7 @@ import { World } from './world';
 import { makeSample, type SampleOut } from './course';
 import { clamp, lerp } from './rng';
 import {
-  GRAVITY, WHEELBASE, SPEED_CAP, PEDAL_TOP_SPEED, SURFACES, SECTIONS, RAVINE_DEPTH,
+  GRAVITY, WHEELBASE, SPEED_CAP, PEDAL_TOP_SPEED, SURFACES, SECTIONS,
 } from './constants';
 
 export interface RiderInput {
@@ -108,6 +108,7 @@ export class Rider {
   trickPhaseNorm = 0;   // 0..1 through the current trick
   lastLanding: LandingEvent | null = null;
   lastCrashReason = '';
+  lastCrashS = 0;
 
   checkpoint = 0;
   checkpointS = 0;
@@ -198,7 +199,8 @@ export class Rider {
     const preloadPush = this.preload * PRELOAD_RATE * MAX_TRAVEL;
     let compF = clamp(restF - (this.y + armF) + preloadPush, 0, MAX_TRAVEL);
     let compR = clamp(restR - (this.y + armR) + preloadPush, 0, MAX_TRAVEL);
-    const inVoid = gF.voidGap && gR.voidGap;
+    // Half a wheelbase over a chasm is not support: either probe in the void means air.
+    const inVoid = gF.voidGap || gR.voidGap;
     if (inVoid) { compF = 0; compR = 0; }
 
     // The ground itself is falling away beneath a descending rider; dampers resist the
@@ -235,7 +237,8 @@ export class Rider {
     }
 
     // Falling into 竹林峽 is a crash, not a long descent.
-    if (inVoid && this.y < gF.height + RAVINE_DEPTH - 3.5) {
+    const lipLevel = course.centreY(this.s) + course.featureHeight(this.s);
+    if (inVoid && this.y < lipLevel - 3.5) {
       this.crash('short of the ravine');
       return;
     }
@@ -365,19 +368,38 @@ export class Rider {
     this.hopArmed = false;
   }
 
+  /** Seconds of air left before touchdown, from the current ballistic state. */
+  predictedAirRemaining(): number {
+    if (!this.airborne) return 0;
+    const c = this.world.course;
+    const ride = WHEEL_R + RIDE_HEIGHT;
+    // Fixed-point: the ground you land on is the ground where you will be, not the
+    // ground under the deck you just left.
+    let t = 0;
+    for (let k = 0; k < 4; k++) {
+      const landS = clamp(this.s + this.speed * t, 0, c.length);
+      const groundY = c.landingHeight(landS, this.lateral) + ride;
+      const drop = Math.max(0, this.y - groundY);
+      const disc = this.vy * this.vy + 2 * GRAVITY * drop;
+      t = disc <= 0 ? 0 : (this.vy + Math.sqrt(disc)) / GRAVITY;
+    }
+    return t;
+  }
+
   /** Seconds until the next crest ahead (negative = just passed one). */
   timeToNextLip(): number {
     const c = this.world.course;
     const v = Math.max(this.speed, 1);
-    let best = 999;
-    for (let ds = -6; ds <= 26; ds += 0.5) {
+    for (let ds = -3; ds <= 26; ds += 0.5) {
       const s = clamp(this.s + ds, 0, c.length);
-      const h0 = c.featureHeight(clamp(s - 0.5, 0, c.length));
+      // A launch edge is where the ground stops holding you up: the far side of a
+      // tabletop deck, the ravine lip, the terrace step.
+      if (c.isVoid(s, this.lateral)) return ds / v;
       const h1 = c.featureHeight(s);
-      const h2 = c.featureHeight(clamp(s + 0.5, 0, c.length));
-      if (h1 > h0 && h1 >= h2 && h1 > 0.35) { best = ds / v; break; }
+      const h2 = c.featureHeight(clamp(s + 0.6, 0, c.length));
+      if (h1 > 0.30 && h2 < h1 - 0.06) return ds / v;
     }
-    return best;
+    return 999;
   }
 
   private startTrick(id: number): void {
@@ -450,6 +472,7 @@ export class Rider {
     this.crashTimer = 1.6;
     this.crashes++;
     this.lastCrashReason = reason;
+    this.lastCrashS = +this.s.toFixed(1);
     this.trick = 0; this.trickTimer = 0; this.trickPhaseNorm = 0;
     this.sliding = false;
     this.boost = Math.max(0, this.boost - 0.35);

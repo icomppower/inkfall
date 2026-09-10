@@ -1,5 +1,5 @@
 import { World } from './world';
-import { Rider, neutralInput, type RiderInput } from './bike';
+import { Rider, neutralInput, TRICKS, type RiderInput } from './bike';
 import { TABLE_DS } from './course';
 import { clamp, lerp, Rng } from './rng';
 import {
@@ -45,13 +45,13 @@ export const STYLES: Record<string, PilotStyle> = {
     id: 'BO', zh: '肥波', en: 'BO',
     lineBias: 2.6, brakePoint: 0.86, pace: 1.035, rainFactor: 0.66,
     jumpAppetite: 0.0, trickChance: 0, aggressive: true, mass: 1.28,
-    errorRate: 0.0042, jersey: 0.62, helmet: 'round',
+    errorRate: 0.0022, jersey: 0.62, helmet: 'round',
   },
   MUN: {
     id: 'MUN', zh: '小蚊', en: 'MUN',
     lineBias: 2.2, brakePoint: 0.95, pace: 1.02, rainFactor: 0.74,
     jumpAppetite: 1.0, trickChance: 1.0, aggressive: false, mass: 0.86,
-    errorRate: 0.0034, jersey: 0.78, helmet: 'visor',
+    errorRate: 0.0036, jersey: 0.78, helmet: 'visor',
   },
 };
 
@@ -87,18 +87,27 @@ export function buildSpeedProfile(world: World, style: PilotStyle, wetness = 0):
     const camberHelp = 1 + Math.max(0, -Math.sign(c.kap[i]) * c.cam[i]) * 0.9;
     v[i] = Math.min(SPEED_CAP, Math.sqrt((mu * GRAVITY * camberHelp) / k) * style.pace);
   }
+  // Backward pass: respect how hard this rider is willing to brake.
+  const decel = 5.2 * style.brakePoint;
+  for (let i = n - 2; i >= 0; i--) {
+    const limit = Math.sqrt(v[i + 1] * v[i + 1] + 2 * decel * TABLE_DS);
+    if (v[i] > limit) v[i] = limit;
+  }
+  // 小蚊 deliberately carries speed into the jump line so every lip actually gives air.
+  if (style.jumpAppetite > 0.5) {
+    for (const t of TABLETOPS) {
+      const exit = t.s + t.deck * 0.5;
+      const from = Math.max(0, Math.round((exit - 34) / TABLE_DS));
+      const to = Math.min(n - 1, Math.round((exit + 1) / TABLE_DS));
+      for (let i = from; i <= to; i++) v[i] = Math.max(v[i], 14.5);
+    }
+  }
   // The ravine has a minimum, not a maximum: come in slow and you are in the stream.
   for (const lp of launches) {
     if (Math.abs(lp - (RAVINE_S - RAVINE_WIDTH * 0.5)) > 0.5) continue;
     const from = Math.max(0, Math.round((lp - RAVINE_LIP_RUN - 40) / TABLE_DS));
     const to = Math.min(n - 1, Math.round((lp + 2) / TABLE_DS));
     for (let i = from; i <= to; i++) v[i] = Math.max(v[i], 15.5);
-  }
-  // Backward pass: respect how hard this rider is willing to brake.
-  const decel = 5.2 * style.brakePoint;
-  for (let i = n - 2; i >= 0; i--) {
-    const limit = Math.sqrt(v[i + 1] * v[i + 1] + 2 * decel * TABLE_DS);
-    if (v[i] > limit) v[i] = limit;
   }
   return v;
 }
@@ -118,20 +127,34 @@ export class Pilot {
   private targetLaunch = -1;
   private wetnessBaked = 0;
   private trickWanted = 0;
+  private errorTimer = 0;
+  private errorDir = 1;
+  private crashesAtLastError = 0;
+  private calmTimer = 20;
   tricksAttempted = 0;
+
+  private readonly rngSeed: string;
 
   constructor(world: World, style: PilotStyle, seed: string) {
     this.world = world;
     this.style = style;
-    this.rng = new Rng(`pilot:${style.id}:${seed}`);
+    this.rngSeed = `pilot:${style.id}:${seed}`;
+    this.rng = new Rng(this.rngSeed);
     this.profile = buildSpeedProfile(world, style, 0);
   }
 
   reset(): void {
+    // Reseed: a re-run of the same seed must make the same mistakes in the same places.
+    this.rng = new Rng(this.rngSeed);
+    this.profile = buildSpeedProfile(this.world, this.style, 0);
+    this.wetnessBaked = 0;
     this.preloading = false;
     this.targetLaunch = -1;
     this.trickWanted = 0;
     this.tricksAttempted = 0;
+    this.errorTimer = 0;
+    this.crashesAtLastError = 0;
+    this.calmTimer = 20;
   }
 
   /** The style's racing-line lateral offset at a track position. */
@@ -175,6 +198,17 @@ export class Pilot {
       i.brake = 0;
     }
 
+    // Air control: bring the bike's pitch onto the slope it is about to land on.
+    if (rider.airborne) {
+      const c = this.world.course;
+      const landS = clamp(rider.s + rider.speed * rider.predictedAirRemaining(), 0, COURSE_LENGTH);
+      const slope = Math.atan2(
+        c.landingHeight(Math.min(landS + 1.2, COURSE_LENGTH), rider.lateral)
+        - c.landingHeight(Math.max(landS - 1.2, 0), rider.lateral), 2.4);
+      i.airPitch = clamp((slope - rider.pitch) * 1.9, -1, 1);
+      i.airRoll = clamp(-rider.roll * 2.2, -1, 1);
+    }
+
     // Steering: proportional-derivative onto the racing line.
     const want = this.lineOffset(rider.s + Math.max(4, rider.speed * 0.45));
     const err = want - rider.lateral;
@@ -182,7 +216,10 @@ export class Pilot {
 
     // Hop timing at the next launch edge.
     const next = this.launches.find((p) => p > rider.s - 1);
-    if (next !== undefined && this.style.jumpAppetite > 0.2) {
+    // The 竹林峽 ravine is mandatory for everyone, whatever their appetite for lips.
+    const ravineLip = RAVINE_S - RAVINE_WIDTH * 0.5;
+    const mustHop = next !== undefined && Math.abs(next - ravineLip) < 0.5;
+    if (next !== undefined && (mustHop || this.style.jumpAppetite > 0.2)) {
       const dist = next - rider.s;
       const tt = dist / Math.max(rider.speed, 1);
       if (tt < 0.42 && dist > -0.5) {
@@ -198,12 +235,14 @@ export class Pilot {
       }
     }
     if (rider.airborne && this.trickWanted > 0 && rider.trick === 0) {
-      // Only commit to a trick that fits inside the air actually available.
-      const air = Math.max(0, rider.vy) * 2 / GRAVITY + rider.airTime;
-      const wanted = air > 1.25 ? this.trickWanted : air > 0.9 ? Math.min(this.trickWanted, 4) : Math.min(this.trickWanted, 2);
-      i.trick = wanted;
-      this.trickWanted = 0;
-      this.tricksAttempted++;
+      // Only commit to a trick that fits inside the air actually left, with margin.
+      const budget = rider.predictedAirRemaining() * 0.93;
+      let pick = 0;
+      for (let t = Math.min(this.trickWanted, 5); t >= 1; t--) {
+        if (TRICKS[t].duration <= budget) { pick = t; break; }
+      }
+      if (pick > 0) { i.trick = pick; this.tricksAttempted++; this.trickWanted = 0; }
+      else if (rider.airTime > 0.45) this.trickWanted = 0;   // this launch had nothing in it
     }
 
     // Spend banked boost on the straights.
@@ -211,13 +250,24 @@ export class Pilot {
       i.boost = true;
     }
 
-    // Honest mistakes, seeded. Rain makes them likelier.
-    if (this.style.errorRate > 0) {
+    // Honest mistakes, seeded. Rain makes them likelier, and a mistake lasts long
+    // enough to actually cost something — a one-frame twitch is not a mistake.
+    if (this.errorTimer > 0) {
+      this.errorTimer -= dt;
+      i.steer = clamp(i.steer + this.errorDir * 1.8, -1, 1);
+      i.brake = Math.max(i.brake, 0.95);
+      i.frontBrake = 0.9;      // a fistful of front brake mid-corner is how you wash out
+      i.pedal = 0;
+    } else if (this.style.errorRate > 0 && !rider.airborne && rider.crashes === this.crashesAtLastError) {
       const p = this.style.errorRate * dt * (1 + wetness * 2.6);
       if (this.rng.next() < p) {
-        i.steer = clamp(i.steer + (this.rng.next() < 0.5 ? -1.6 : 1.6), -1, 1);
-        i.brake = Math.max(i.brake, 0.9);
+        this.errorTimer = 0.38;
+        this.errorDir = this.rng.next() < 0.5 ? -1 : 1;
       }
+    } else if (rider.crashes !== this.crashesAtLastError) {
+      // Shaken: no further mistakes for a while after going down.
+      this.calmTimer -= dt;
+      if (this.calmTimer <= 0) { this.crashesAtLastError = rider.crashes; this.calmTimer = 20; }
     }
     return i;
   }
@@ -225,8 +275,10 @@ export class Pilot {
   /** Lateral nudge when this rider decides to close the door on a neighbour. */
   contactUrge(rider: Rider, otherLateral: number, gap: number): number {
     if (!this.style.aggressive) return 0;
-    if (gap > 6 || Math.abs(otherLateral - rider.lateral) > 1.9) return 0;
-    return Math.sign(otherLateral - rider.lateral) * 0.55;
+    // Only when genuinely alongside, and only on the switchbacks and berms.
+    if (gap > 2.6 || Math.abs(otherLateral - rider.lateral) > 1.2) return 0;
+    if (Math.abs(this.world.course.curvatureAt(rider.s)) < 0.010) return 0;
+    return Math.sign(otherLateral - rider.lateral) * 0.40;
   }
 }
 

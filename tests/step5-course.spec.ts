@@ -106,15 +106,15 @@ test.describe('step 5 — sections, scenery, jumps, landings', () => {
         api.step(1);
         const st = api.state();
         const air = st.physics.airborne as boolean;
-        if (!released && (st.race.s as number) > 1411.5) { api.input({ preload: false }); released = true; }
-        if (released && air && !wasAir) { wasAir = true; api.input({ trick: t }); }
+        if (!released && (st.race.s as number) > 1402.0) { api.input({ preload: false }); released = true; }
+        if (air && !wasAir && (st.race.s as number) > 1401) { wasAir = true; api.input({ trick: t }); }
         if (air) maxAir = Math.max(maxAir, st.physics.airTime as number);
         if (wasAir && !air) { land = st.physics.lastLanding as Record<string, unknown>; break; }
         if (st.race.phase === 'crashed') break;
       }
       const st = api.state();
       return { maxAir, land, boost: st.physics.boost as number, crashes: st.race.crashes as number, reason: st.physics.lastCrashReason as string };
-    }, [20, 5]);
+    }, [22, 5]);
     expect(res.maxAir, 'the deck exit actually launches the rider').toBeGreaterThan(1.2);
     expect(res.land, 'a landing was judged').not.toBeNull();
     expect((res.land as Record<string, unknown>).trick).toBe(5);
@@ -137,14 +137,14 @@ test.describe('step 5 — sections, scenery, jumps, landings', () => {
         api.step(1);
         const st = api.state();
         const air = st.physics.airborne as boolean;
-        if (!released && (st.race.s as number) > 1411.5) { api.input({ preload: false }); released = true; }
-        if (released && air && !wasAir) { wasAir = true; api.input({ trick: t }); }
+        if (!released && (st.race.s as number) > 1402.0) { api.input({ preload: false }); released = true; }
+        if (air && !wasAir && (st.race.s as number) > 1401) { wasAir = true; api.input({ trick: t }); }
         if (wasAir && !air) { land = st.physics.lastLanding as Record<string, unknown>; break; }
         if (st.race.phase === 'crashed') { land = st.physics.lastLanding as Record<string, unknown>; break; }
       }
       const st = api.state();
       return { land, crashes: st.race.crashes as number, reason: st.physics.lastCrashReason as string, phase: st.race.phase as string };
-    }, [11, 5]);
+    }, [12, 5]);
     expect(res.land, 'a landing was judged').not.toBeNull();
     expect((res.land as Record<string, unknown>).trickComplete).toBe(false);
     expect((res.land as Record<string, unknown>).crash).toBe(true);

@@ -3,7 +3,7 @@ import { Noise2D } from './noise';
 import { evalSpline, v3, type Vec3 } from './spline';
 import {
   COURSE_LENGTH, SUMMIT_Y, SECTIONS, SURFACES, TABLETOPS, STEP_DOWN_S, STEP_DOWN_DROP,
-  RAVINE_S, RAVINE_WIDTH, RAVINE_LIP_RUN, RAVINE_LIP_RISE, RAVINE_DEPTH,
+  RAVINE_S, RAVINE_WIDTH, RAVINE_LIP_RUN, RAVINE_LIP_RISE, RAVINE_DEPTH, STEP_DOWN_RUN,
   BRIDGE_S, BRIDGE_LEN, ROCK_DROPS, ROCK_DROP_HEIGHT,
   type SurfaceType, type SectionDef,
 } from './constants';
@@ -492,18 +492,27 @@ export class Course {
       else if (d <= half) h += t.lipRise;
       else h += t.lipRise * (1 - smoothstep(0, 1, (d - half) / (t.lipRun * 0.9)));
     }
-    // Ravine take-off lip.
+    // Ravine take-off lip. A kicker, not a hump: the slope has to be at its steepest
+    // exactly at the edge, or the rider rolls off a flat top with no vertical velocity
+    // and lands in the stream every time.
     {
       const lipStart = RAVINE_S - RAVINE_WIDTH * 0.5 - RAVINE_LIP_RUN;
       const lipEnd = RAVINE_S - RAVINE_WIDTH * 0.5;
-      if (s > lipStart && s < lipEnd) h += RAVINE_LIP_RISE * smoothstep(0, 1, (s - lipStart) / RAVINE_LIP_RUN);
-      else if (s >= lipEnd && s < RAVINE_S + RAVINE_WIDTH * 0.5 + 6) {
-        h += RAVINE_LIP_RISE * (1 - smoothstep(0, 1, (s - RAVINE_S - RAVINE_WIDTH * 0.5) / 6));
+      const farEdge = RAVINE_S + RAVINE_WIDTH * 0.5;
+      if (s > lipStart && s < lipEnd) {
+        const t = (s - lipStart) / RAVINE_LIP_RUN;
+        h += RAVINE_LIP_RISE * t * t;
+      } else if (s >= lipEnd && s < farEdge) {
+        h += RAVINE_LIP_RISE;                      // notional; this span is void anyway
+      } else if (s >= farEdge && s < farEdge + 9) {
+        // Landing downslope on the far bank.
+        const t = (s - farEdge) / 9;
+        h += RAVINE_LIP_RISE * 0.9 * (1 - t) * (1 - t);
       }
     }
     // Terrace step-down: the trail runs flat to a wall edge and drops.
     if (s > STEP_DOWN_S - 14 && s < STEP_DOWN_S) h += STEP_DOWN_DROP * smoothstep(0, 1, (s - (STEP_DOWN_S - 14)) / 14);
-    else if (s >= STEP_DOWN_S && s < STEP_DOWN_S + 1.2) h += STEP_DOWN_DROP * (1 - (s - STEP_DOWN_S) / 1.2);
+    else if (s >= STEP_DOWN_S && s < STEP_DOWN_S + STEP_DOWN_RUN) h += STEP_DOWN_DROP * (1 - (s - STEP_DOWN_S) / STEP_DOWN_RUN);
     // 300 mm rock ledges.
     for (const r of ROCK_DROPS) {
       if (s > r - 9 && s < r) h += ROCK_DROP_HEIGHT * smoothstep(0, 1, (s - (r - 9)) / 9);
@@ -535,13 +544,27 @@ export class Course {
     return this.centreY(s) + this.featureHeight(s) + lateral * this.camberAt(s);
   }
 
+  /** Where a rider will actually touch down: macro relief with the void filled in. */
+  landingHeight(s: number, lateral: number): number {
+    const sc = clamp(s, 0, COURSE_LENGTH);
+    return this.centreY(sc) + this.featureHeight(sc) + lateral * this.camberAt(sc);
+  }
+
   /** Macro surface normal — the one a landing is judged against. */
   macroNormal(s: number, lateral: number, out: { x: number; y: number; z: number }): void {
     const d = 0.6;
-    const dhds = (this.macroHeight(clamp(s + d, 0, COURSE_LENGTH), lateral)
-                - this.macroHeight(clamp(s - d, 0, COURSE_LENGTH), lateral)) / (2 * d);
-    const dhdl = (this.macroHeight(s, lateral + d) - this.macroHeight(s, lateral - d)) / (2 * d);
-    const i = this.idx(s);
+    // Never sample across the ravine edge: the step to the stream bed is not a slope.
+    let sq = s;
+    if (this.isVoid(sq, lateral)) {
+      const far = RAVINE_S + RAVINE_WIDTH * 0.5 + 0.7;
+      const near = RAVINE_S - RAVINE_WIDTH * 0.5 - 0.7;
+      sq = sq > RAVINE_S ? far : near;
+    }
+    const sa = clamp(sq + d, 0, COURSE_LENGTH), sb = clamp(sq - d, 0, COURSE_LENGTH);
+    const dhds = clamp((this.macroHeight(this.isVoid(sa, lateral) ? sq : sa, lateral)
+                - this.macroHeight(this.isVoid(sb, lateral) ? sq : sb, lateral)) / (2 * d), -1.2, 1.2);
+    const dhdl = clamp((this.macroHeight(sq, lateral + d) - this.macroHeight(sq, lateral - d)) / (2 * d), -1.2, 1.2);
+    const i = this.idx(sq);
     const ax = this.tx[i], ay = dhds, az = this.tz[i];
     const bx = this.rx[i], by = dhdl, bz = this.rz[i];
     let nx = by * az - bz * ay;

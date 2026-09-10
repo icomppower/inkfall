@@ -30,14 +30,16 @@ if (capture) {
     courseLength: COURSE_LENGTH,
     controlPointCount: game.world.course.controlPoints.length,
     erodedDroplets: game.world.terrain.erodedDroplets,
-    start() { game.paused = false; game.player.phase = 'riding'; },
+    start() { game.paused = false; game.race.start(); },
     reset(s?: string) { game.restart(s); Object.assign(scripted, neutralInput()); },
     seek(progress: number, speed?: number) {
       const target = Math.max(0, Math.min(1, progress)) * COURSE_LENGTH;
-      game.player.reset(target);
-      if (speed !== undefined) game.player.speed = speed;
-      game.player.phase = 'riding';
-      game.player.checkpointS = target;
+      for (const e of game.race.entrants) {
+        e.rider.reset(target);
+        if (speed !== undefined) e.rider.speed = speed;
+        e.rider.phase = 'riding';
+        e.rider.checkpointS = target;
+      }
       game.director.reset();
       game.stepFrames(1, scripted);
     },
@@ -50,6 +52,7 @@ if (capture) {
     cameraLog() { return game.director.cuts.map((c) => ({ ...c })); },
     minCutGap() { return game.director.minCutGap(); },
     effects(on: boolean) { game.setEffects(on); },
+    riders() { return game.race.summary(); },
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
     analyzeFrame() { game.render(); return game.analyzeFrame(); },

@@ -4,7 +4,7 @@ import { Rider, neutralInput, WHEEL_R, RIDE_HEIGHT, type RiderInput } from './si
 import { makeSample } from './sim/course';
 import { Director } from './sim/director';
 import { InputSource } from './input';
-import { FIXED_DT, MAX_CATCHUP_STEPS, CHECKPOINTS, COURSE_LENGTH, GRAVITY, DEFAULT_SEED } from './sim/constants';
+import { FIXED_DT, MAX_CATCHUP_STEPS, COURSE_LENGTH, GRAVITY, DEFAULT_SEED } from './sim/constants';
 import { buildTerrain } from './render/terrainMesh';
 import { buildTrailGeometry } from './render/trailMesh';
 import { InkPipeline } from './render/pipeline';
@@ -15,14 +15,14 @@ import { analyzeCanvas } from './render/analyze';
 import { Scenery } from './render/scenery';
 import { RiderRig } from './render/riderMesh';
 import { Weather } from './sim/weather';
-import { Pilot, AUTOPILOT } from './sim/pilot';
+import { Race } from './sim/race';
 import { Particles } from './render/particles';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
 
 export class Game {
   world: World;
-  player: Rider;
+  race: Race;
   director: Director;
   input: InputSource;
   renderer: THREE.WebGLRenderer;
@@ -33,9 +33,7 @@ export class Game {
   sky: THREE.Mesh;
   scenery!: Scenery;
   weather: Weather;
-  autoPilot: Pilot;
-  autopilotOn = false;
-  rivals: Rider[] = [];
+  riderRigs: RiderRig[] = [];
   particles!: Particles;
   terrainDropped = 0;
 
@@ -60,10 +58,9 @@ export class Game {
   constructor(parent: HTMLElement, opts: GameOptions = {}) {
     this.seed = opts.seed ?? DEFAULT_SEED;
     this.world = new World(this.seed);
-    this.player = new Rider(this.world, 'INK');
-    this.director = new Director(this.world);
     this.weather = new Weather(this.seed);
-    this.autoPilot = new Pilot(this.world, AUTOPILOT, this.seed);
+    this.race = new Race(this.world, this.weather, this.seed);
+    this.director = new Director(this.world);
     this.input = new InputSource();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -84,10 +81,7 @@ export class Game {
     this.scene.add(this.group);
     this.buildScene();
 
-    this.playerRig = new RiderRig(this.pipeline.shared, {
-      jersey: 0.30, helmet: 'visor', mark: '墨', accent: new THREE.Color(0.72, 0.16, 0.14),
-    });
-    this.group.add(this.playerRig.root);
+    this.buildRigs();
 
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -119,29 +113,39 @@ export class Game {
     this.camera.updateProjectionMatrix();
   }
 
+  get player(): Rider { return this.race.player; }
+  get rivals(): Rider[] { return this.race.entrants.filter((e) => !e.isPlayer).map((e) => e.rider); }
+  get autopilotOn(): boolean { return this.race.autopilotOn; }
+  set autopilotOn(v: boolean) { this.race.autopilotOn = v; }
+
+  private buildRigs(): void {
+    for (const rig of this.riderRigs) this.group.remove(rig.root);
+    this.riderRigs = [];
+    for (const e of this.race.entrants) {
+      const rig = new RiderRig(this.pipeline.shared, e.isPlayer
+        ? { jersey: 0.30, helmet: 'visor', mark: '墨', accent: new THREE.Color(0.72, 0.16, 0.14) }
+        : { jersey: e.style.jersey, helmet: e.style.helmet });
+      this.riderRigs.push(rig);
+      this.group.add(rig.root);
+    }
+    this.playerRig = this.riderRigs[this.race.entrants.findIndex((e) => e.isPlayer)];
+  }
+
   restart(seed?: string): void {
     if (seed && seed !== this.seed) {
       this.seed = seed;
       this.world = new World(seed);
-      this.player = new Rider(this.world, 'INK');
+      this.weather = new Weather(seed);
+      this.race = new Race(this.world, this.weather, seed);
       this.director = new Director(this.world);
       this.group.clear();
       this.buildScene();
-      this.group.add(this.playerRig.root);
-      this.weather = new Weather(seed);
-      this.autoPilot = new Pilot(this.world, AUTOPILOT, seed);
+      this.buildRigs();
     } else {
-      this.player.reset(0);
+      this.race.reset();
     }
-    this.player.phase = 'ready';
-    this.player.crashes = 0;
-    this.player.style = 0;
-    this.player.boost = 0;
-    this.player.checkpoint = 0;
-    this.player.checkpointS = 0;
     this.director.reset();
     this.weather.reset();
-    this.autoPilot.reset();
     this.particles.clear();
     this.flash = 0;
     this.simSteps = 0;
@@ -152,13 +156,9 @@ export class Game {
   /** One deterministic 120 Hz tick. */
   fixedStep(rawInput: RiderInput): void {
     this.weather.step(FIXED_DT, this.player.s, this.player.speed);
-    this.player.wetness = this.weather.wetness;
-    const input = this.autopilotOn
-      ? this.autoPilot.step(FIXED_DT, this.player, this.weather.wetness)
-      : rawInput;
-    this.lastSteer = input.steer;
+    this.lastSteer = rawInput.steer;
     const landedBefore = this.player.lastLanding;
-    this.player.step(FIXED_DT, input);
+    this.race.step(FIXED_DT, rawInput);
     if (this.player.lastLanding !== landedBefore && this.player.lastLanding) {
       const ev = this.player.lastLanding;
       if (!ev.clean) this.flash = 0.9;
@@ -167,13 +167,6 @@ export class Game {
     this.emitContact(FIXED_DT);
     this.particles.simulate(FIXED_DT);
     this.updateEffectUniforms(FIXED_DT);
-    // Checkpoint gates.
-    for (let i = this.player.checkpoint; i < CHECKPOINTS.length; i++) {
-      if (this.player.s >= CHECKPOINTS[i]) {
-        this.player.checkpoint = i + 1;
-        this.player.checkpointS = CHECKPOINTS[i];
-      } else break;
-    }
     this.director.impactActive = this.flash > 0.05;
     this.director.step(FIXED_DT, this.player, this.rivals);
     this.simSteps++;
@@ -246,25 +239,28 @@ export class Game {
 
   private syncRider(dt: number): void {
     const c = this.world.course;
-    const r = this.player;
-    const i = c.idx(r.s);
-    this.playerRig.update({
-      x: c.centreX(r.s) + r.lateral * c.rx[i],
-      y: r.y - (WHEEL_R + RIDE_HEIGHT),
-      z: c.centreZ(r.s) + r.lateral * c.rz[i],
-      heading: Math.atan2(c.tx[i], -c.tz[i]) + r.yaw,
-      pitch: r.pitch,
-      roll: r.roll,
-      compressionF: r.compressionF,
-      compressionR: r.compressionR,
-      wheelRpm: r.wheelRpm,
-      steer: this.lastSteer,
-      trick: r.trick,
-      trickPhase: r.trickPhaseNorm,
-      crashed: r.phase === 'crashed',
-      crashTime: Math.max(0, 1.6 - r.crashTimer),
-      dt,
-    });
+    for (let i = 0; i < this.race.entrants.length; i++) {
+      const r = this.race.entrants[i].rider;
+      const rig = this.riderRigs[i];
+      const j = c.idx(r.s);
+      rig.update({
+        x: c.centreX(r.s) + r.lateral * c.rx[j],
+        y: r.y - (WHEEL_R + RIDE_HEIGHT),
+        z: c.centreZ(r.s) + r.lateral * c.rz[j],
+        heading: Math.atan2(c.tx[j], -c.tz[j]) + r.yaw,
+        pitch: r.pitch,
+        roll: r.roll,
+        compressionF: r.compressionF,
+        compressionR: r.compressionR,
+        wheelRpm: r.wheelRpm,
+        steer: r === this.player ? this.lastSteer : 0,
+        trick: r.trick,
+        trickPhase: r.trickPhaseNorm,
+        crashed: r.phase === 'crashed',
+        crashTime: Math.max(0, 1.6 - r.crashTimer),
+        dt,
+      });
+    }
   }
 
   advance(nowMs: number): void {
@@ -422,6 +418,9 @@ export class Game {
         time: +this.simTime.toFixed(4),
         simSteps: this.simSteps,
         checkpoint: p.checkpoint,
+        place: this.race.placement(p),
+        splits: this.race.splits.slice(),
+        contacts: this.race.contacts,
         crashes: p.crashes,
         style: p.style,
         section: c.sectionAt(p.s).index,
@@ -471,7 +470,7 @@ export class Game {
         speedStroke: +(this.pipeline.post.uniforms.uSpeedStroke.value as number).toFixed(3),
         frameMs: +this.frameEma.toFixed(2),
       },
-      riders: [],
+      riders: this.race.summary(),
     };
   }
 }
