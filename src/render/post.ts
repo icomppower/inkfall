@@ -33,10 +33,10 @@ export function makePostMaterial(ink: THREE.Color, paper: THREE.Color): {
     uInk: { value: ink.clone() },
     uPaper: { value: paper.clone() },
     uTime: { value: 0 },
-    uDepthThreshold: { value: 0.030 },
-    uNormalThreshold: { value: 0.20 },
+    uDepthThreshold: { value: 0.042 },
+    uNormalThreshold: { value: 0.46 },
     uLineStrength: { value: 0.92 },
-    uWobble: { value: 1.1 },
+    uWobble: { value: 0.9 },
     uFlash: { value: 0 },
     uSpeedStroke: { value: 0 },
     uRain: { value: 0 },
@@ -109,7 +109,7 @@ export function makePostMaterial(ink: THREE.Color, paper: THREE.Color): {
         vec3 nrm = nd.rgb * 2.0 - 1.0;
 
         // Depth-varying line weight, wobbled so the stroke has bristle.
-        float weight = mix(2.4, 0.85, smoothstep(0.0, 0.22, depth));
+        float weight = mix(1.65, 0.75, smoothstep(0.0, 0.22, depth));
         vec2 wob = vec2(vnoise(uv * 260.0 + uTime * 0.35),
                         vnoise(uv * 260.0 + 19.7 - uTime * 0.29)) - 0.5;
         vec2 step2 = uTexel * weight;
@@ -133,7 +133,7 @@ export function makePostMaterial(ink: THREE.Color, paper: THREE.Color): {
           smoothstep(uDepthThreshold, uDepthThreshold * 2.2, maxDepthDiff),
           smoothstep(uNormalThreshold, uNormalThreshold * 2.0, maxNormalDiff));
         // Far ridges dissolve into 留白 rather than growing a hard outline.
-        edge *= 1.0 - smoothstep(0.55, 0.95, depth);
+        edge *= 1.0 - smoothstep(0.30, 0.82, depth);
         vec3 col = mix(c.rgb, uInk, edge * uLineStrength);
 
         // Peripheral ink speed-strokes.

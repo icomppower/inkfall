@@ -15,9 +15,9 @@ export function makeHatchTexture(seed: string, size = 512): THREE.DataTexture {
   ctx.fillRect(0, 0, size, size);
 
   const densities: { channel: number; spacing: number; width: number; angle: number; ink: number }[] = [
-    { channel: 0, spacing: 26, width: 2.0, angle: -0.72, ink: 0.80 },
-    { channel: 1, spacing: 15, width: 2.6, angle: -0.72, ink: 0.74 },
-    { channel: 2, spacing: 9,  width: 3.2, angle: -0.66, ink: 0.64 },
+    { channel: 0, spacing: 30, width: 2.2, angle: -0.72, ink: 0.88 },
+    { channel: 1, spacing: 19, width: 2.8, angle: -0.72, ink: 0.80 },
+    { channel: 2, spacing: 13, width: 3.4, angle: -0.66, ink: 0.72 },
   ];
 
   const layers: Uint8ClampedArray[] = [];

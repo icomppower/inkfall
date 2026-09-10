@@ -443,6 +443,17 @@ export class Course {
     return lerp(this.pz[i], this.pz[j], t);
   }
   widthAt(s: number): number { return this.wid[this.idx(s)]; }
+
+  /**
+   * How far the trail ribbon can be offset sideways before the offset surface folds
+   * through the centre of curvature. Hairpins are tight, so their aprons are narrow.
+   */
+  ribbonSpan(s: number, maxApron: number, minApron: number): number {
+    const halfW = this.widthAt(s) * 0.5;
+    const k = Math.abs(this.curvatureAt(s));
+    const fold = k > 1e-5 ? 0.78 / k : Infinity;
+    return clamp(Math.min(halfW + maxApron, fold), halfW + minApron, halfW + maxApron);
+  }
   curvatureAt(s: number): number { return this.kap[this.idx(s)]; }
   camberAt(s: number): number { return this.cam[this.idx(s)]; }
   sectionAt(s: number): SectionDef { return sectionAt(s); }

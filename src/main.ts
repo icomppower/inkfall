@@ -19,6 +19,8 @@ function frame(now: number): void {
 }
 requestAnimationFrame(frame);
 
+if (capture) (window as unknown as Record<string, unknown>).__INKFALL_GAME = game;
+
 if (capture) {
   const scripted: RiderInput = neutralInput();
   game.input.scripted = scripted;
@@ -30,10 +32,12 @@ if (capture) {
     erodedDroplets: game.world.terrain.erodedDroplets,
     start() { game.paused = false; game.player.phase = 'riding'; },
     reset(s?: string) { game.restart(s); Object.assign(scripted, neutralInput()); },
-    seek(progress: number) {
+    seek(progress: number, speed?: number) {
       const target = Math.max(0, Math.min(1, progress)) * COURSE_LENGTH;
       game.player.reset(target);
+      if (speed !== undefined) game.player.speed = speed;
       game.player.phase = 'riding';
+      game.player.checkpointS = target;
       game.director.reset();
       game.stepFrames(1, scripted);
     },
@@ -43,6 +47,13 @@ if (capture) {
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
     analyzeFrame() { game.render(); return game.analyzeFrame(); },
+    debugCam(px: number, py: number, pz: number, tx: number, ty: number, tz: number) {
+      const p = game.director.pose;
+      p.px = px; p.py = py; p.pz = pz; p.tx = tx; p.ty = ty; p.tz = tz; p.fov = 55; p.roll = 0;
+      game.applyCamera(); game.render();
+    },
+    terrainPoke() { return game.terrainPoke(); },
+    terrainDropped() { return game.terrainDropped; },
     sample(s: number, lateral: number) { return { ...game.world.course.sample(s, lateral, game.world.sample(s, lateral)) }; },
     centre(s: number) {
       const c = game.world.course;

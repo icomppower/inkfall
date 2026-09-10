@@ -1,16 +1,19 @@
 import * as THREE from 'three';
 import { World } from './sim/world';
-import { Rider, neutralInput, type RiderInput } from './sim/bike';
+import { Rider, neutralInput, WHEEL_R, RIDE_HEIGHT, type RiderInput } from './sim/bike';
+import { makeSample } from './sim/course';
 import { Director } from './sim/director';
 import { InputSource } from './input';
 import { FIXED_DT, MAX_CATCHUP_STEPS, CHECKPOINTS, COURSE_LENGTH, GRAVITY, DEFAULT_SEED } from './sim/constants';
-import { buildTerrainGeometry } from './render/terrainMesh';
+import { buildTerrain } from './render/terrainMesh';
 import { buildTrailGeometry } from './render/trailMesh';
 import { InkPipeline } from './render/pipeline';
-import { makeInkMaterial, makeHullMaterial } from './render/inkExports';
+import { makeInkMaterial } from './render/inkExports';
 import { makeHatchTexture } from './render/hatch';
 import { makeSky } from './render/sky';
 import { analyzeCanvas } from './render/analyze';
+import { Scenery } from './render/scenery';
+import { RiderRig } from './render/riderMesh';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
 
@@ -25,6 +28,8 @@ export class Game {
 
   pipeline: InkPipeline;
   sky: THREE.Mesh;
+  scenery!: Scenery;
+  terrainDropped = 0;
 
   seed: string;
   paused = false;
@@ -33,8 +38,9 @@ export class Game {
   frames = 0;
   firstFrameAt = 0;
   private accumulator = 0;
+  private lastSteer = 0;
   private last = 0;
-  private bikeProxy: THREE.Mesh;
+  playerRig!: RiderRig;
   private group = new THREE.Group();
 
   constructor(parent: HTMLElement, opts: GameOptions = {}) {
@@ -62,12 +68,10 @@ export class Game {
     this.scene.add(this.group);
     this.buildScene();
 
-    this.bikeProxy = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 0.92, 1.72),
-      makeInkMaterial(this.pipeline.shared, { rampOffset: -0.14, tone: 0.55 }),
-    );
-    this.bikeProxy.add(new THREE.Mesh(this.bikeProxy.geometry, makeHullMaterial(this.pipeline.shared, 0.045)));
-    this.group.add(this.bikeProxy);
+    this.playerRig = new RiderRig(this.pipeline.shared, {
+      jersey: 0.30, helmet: 'visor', mark: '墨', accent: new THREE.Color(0.72, 0.16, 0.14),
+    });
+    this.group.add(this.playerRig.root);
 
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -75,14 +79,18 @@ export class Game {
 
   private buildScene(): void {
     const shared = this.pipeline.shared;
+    const terrain = buildTerrain(this.world);
+    this.terrainDropped = terrain.droppedTriangles;
     this.group.add(new THREE.Mesh(
-      buildTerrainGeometry(this.world),
-      makeInkMaterial(shared, { rampOffset: 0.03, tone: 1.02, wetBand: 0.35, slope: true }),
+      terrain.geometry,
+      makeInkMaterial(shared, { rampOffset: 0.03, tone: 1.05, wetBand: 0.35, slope: true }),
     ));
     this.group.add(new THREE.Mesh(
       buildTrailGeometry(this.world),
-      makeInkMaterial(shared, { rampOffset: -0.06, tone: 0.74, wetBand: 0.9, surfaceId: true }),
+      makeInkMaterial(shared, { rampOffset: -0.06, tone: 0.70, wetBand: 0.9, surfaceId: true, apronTone: 1.05 / 0.70 }),
     ));
+    this.scenery = new Scenery(this.world, shared);
+    this.group.add(this.scenery.group);
   }
 
   resize(): void {
@@ -101,7 +109,7 @@ export class Game {
       this.director = new Director(this.world);
       this.group.clear();
       this.buildScene();
-      this.group.add(this.bikeProxy);
+      this.group.add(this.playerRig.root);
     } else {
       this.player.reset(0);
     }
@@ -119,6 +127,7 @@ export class Game {
 
   /** One deterministic 120 Hz tick. */
   fixedStep(input: RiderInput): void {
+    this.lastSteer = input.steer;
     this.player.step(FIXED_DT, input);
     // Checkpoint gates.
     for (let i = this.player.checkpoint; i < CHECKPOINTS.length; i++) {
@@ -151,20 +160,27 @@ export class Game {
     }
   }
 
-  private syncProxy(): void {
+  private syncRider(dt: number): void {
     const c = this.world.course;
     const r = this.player;
     const i = c.idx(r.s);
-    this.bikeProxy.position.set(
-      c.centreX(r.s) + r.lateral * c.rx[i],
-      r.y,
-      c.centreZ(r.s) + r.lateral * c.rz[i],
-    );
-    const heading = Math.atan2(c.tx[i], -c.tz[i]) + r.yaw;
-    this.bikeProxy.rotation.set(0, 0, 0);
-    this.bikeProxy.rotateY(heading);
-    this.bikeProxy.rotateX(-r.pitch);
-    this.bikeProxy.rotateZ(-r.roll);
+    this.playerRig.update({
+      x: c.centreX(r.s) + r.lateral * c.rx[i],
+      y: r.y - (WHEEL_R + RIDE_HEIGHT),
+      z: c.centreZ(r.s) + r.lateral * c.rz[i],
+      heading: Math.atan2(c.tx[i], -c.tz[i]) + r.yaw,
+      pitch: r.pitch,
+      roll: r.roll,
+      compressionF: r.compressionF,
+      compressionR: r.compressionR,
+      wheelRpm: r.wheelRpm,
+      steer: this.lastSteer,
+      trick: r.trick,
+      trickPhase: r.trickPhaseNorm,
+      crashed: r.phase === 'crashed',
+      crashTime: Math.max(0, 1.6 - r.crashTimer),
+      dt,
+    });
   }
 
   advance(nowMs: number): void {
@@ -186,17 +202,43 @@ export class Game {
   }
 
   private focus = new THREE.Vector3();
+  private pokeSample = makeSample();
 
   render(): void {
     this.applyCamera();
-    this.syncProxy();
+    this.syncRider(1 / 60);
     this.pipeline.shared.uTime.value = this.simTime;
     this.pipeline.post.uniforms.uTime.value = this.simTime;
-    this.focus.copy(this.bikeProxy.position);
+    this.focus.copy(this.playerRig.root.position);
     this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
     this.pipeline.render(this.scene, this.camera, this.focus, [this.sky]);
     this.frames++;
     if (this.firstFrameAt === 0) this.firstFrameAt = performance.now();
+  }
+
+  /**
+   * How far the rendered coarse terrain rises above the trail surface, sampled across
+   * the trail width. This is the honest test of the course mask.
+   */
+  terrainPoke(): { worst: number; samples: number; over5cm: number } {
+    const c = this.world.course;
+    const hf = this.world.terrain;
+    let worst = -Infinity, samples = 0, over = 0;
+    for (let s = 4; s < c.length - 4; s += 2) {
+      const halfW = c.widthAt(s) * 0.5;
+      const i = c.idx(s);
+      for (let f = -1; f <= 1; f += 0.5) {
+        const lat = f * halfW;
+        if (c.sample(s, lat, this.pokeSample).voidGap) continue;
+        const x = c.centreX(s) + lat * c.rx[i];
+        const z = c.centreZ(s) + lat * c.rz[i];
+        const d = hf.heightAt(x, z) - this.pokeSample.height;   // raw coarse field vs trail
+        samples++;
+        if (d > worst) worst = d;
+        if (d > 0.05) over++;
+      }
+    }
+    return { worst: +worst.toFixed(3), samples, over5cm: over };
   }
 
   analyzeFrame(): ReturnType<typeof analyzeCanvas> {
@@ -273,6 +315,7 @@ export class Game {
         shot: this.director.shot,
         cuts: this.director.cuts.length,
         fov: +this.director.pose.fov.toFixed(2),
+        scenery: this.scenery.stats,
         drawCalls: this.pipeline.geoCalls,
         triangles: this.pipeline.geoTriangles,
         dpr: this.pipeline.dpr,

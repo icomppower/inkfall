@@ -4,7 +4,7 @@ import { makeInkUniforms, makePostMaterial, type InkUniforms } from './inkExport
 export interface PipelineTargets { colour: THREE.Texture; normalDepth: THREE.Texture; }
 
 const SHADOW_SIZE = 2048;
-const SHADOW_EXTENT = 62;
+const SHADOW_EXTENT = 105;
 
 /**
  * Two-target geometry pass (colour + normal/depth), a single hard-threshold shadow map

@@ -3,6 +3,10 @@ import { Noise2D } from './noise';
 import { Course } from './course';
 import { SECTIONS, RAVINE_S, RAVINE_WIDTH, RAVINE_DEPTH } from './constants';
 
+/** Ribbon apron limits, shared with the render layer so the hole and the ribbon agree. */
+export const RIBBON_APRON = 13;
+export const RIBBON_MIN_APRON = 6;
+
 export const GRID_N = 257;                 // 257² FBM heightfield, per spec
 export const EROSION_DROPLETS = 14000;     // ≥ 10k
 
@@ -16,6 +20,10 @@ export class Heightfield {
   readonly h = new Float32Array(GRID_N * GRID_N);
   /** Blend weight of the carved trail corridor, 1 = pure trail. Used by the render mask. */
   readonly trailMask = new Float32Array(GRID_N * GRID_N);
+  /** Metres from the trail edge at each grid vertex; large means "nowhere near the trail". */
+  readonly corridorEdge = new Float32Array(GRID_N * GRID_N).fill(1e6);
+  /** How far past the trail edge the ribbon reaches at that vertex's nearest track point. */
+  readonly corridorSpan = new Float32Array(GRID_N * GRID_N);
   readonly x0: number; readonly z0: number; readonly size: number; readonly cell: number;
   erodedDroplets = 0;
 
@@ -35,6 +43,9 @@ export class Heightfield {
 
     this.buildBase(course, seed);
     this.erode(new Rng(`erode:${seed}`));
+    // A cel ramp turns every erosion wrinkle into its own band boundary. Two light
+    // smoothing passes keep the gullies and give the hillsides broad flat washes.
+    this.smooth(2, 0.5);
     this.carveCourse(course);
   }
 
@@ -42,20 +53,41 @@ export class Heightfield {
     const ridge = new Noise2D(`ridge:${seed}`);
     const hills = new Noise2D(`hills:${seed}`);
     const fine = new Noise2D(`fine:${seed}`);
+
+    // Elevation trend, fitted to the course by inverse-distance weighting. Building the
+    // massif as "rises with distance from the trail" instead puts the whole descent at
+    // the bottom of a V-canyon; this way two switchback legs at different heights
+    // produce the cross-slope between them all by themselves.
+    const STRIDE = 16;                       // course samples every 8 m
+    const n = course.px.length;
+    const cxs: number[] = [], czs: number[] = [], cys: number[] = [];
+    for (let i = 0; i < n; i += STRIDE) { cxs.push(course.px[i]); czs.push(course.pz[i]); cys.push(course.py[i]); }
+    const m = cxs.length;
+    const R2 = 90 * 90;
+
     for (let j = 0; j < GRID_N; j++) {
       for (let i = 0; i < GRID_N; i++) {
         const x = this.x0 + i * this.cell;
         const z = this.z0 + j * this.cell;
-        const near = course.nearest(x, z);
-        const d = near.dist;
-        const trailY = course.centreY(near.s);
-        // Hillsides rise away from the trail and flatten out into the massif.
-        const rise = 168 * (1 - Math.exp(-d / 235));
-        const fade = 1 - Math.exp(-d / 130);
-        const r = (ridge.ridged(x * 0.00085, z * 0.00085, 6) - 0.42) * 96 * fade;
-        const f = hills.fbm(x * 0.0031, z * 0.0031, 5) * 19 * fade;
-        const g = fine.fbm(x * 0.0135, z * 0.0135, 3) * 4.2 * fade;
-        this.h[j * GRID_N + i] = trailY + rise + r + f + g;
+        let num = 0, den = 0, best = Infinity;
+        for (let c = 0; c < m; c++) {
+          const dx = cxs[c] - x, dz = czs[c] - z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < best) best = d2;
+          // 1/(d²+R²)² is local enough that the trend actually passes through the course.
+          // A plain 1/(d²+R²) kernel sags a hundred metres below the summit.
+          const wd = 1 / (d2 + R2);
+          const w = wd * wd;
+          num += w * cys[c];
+          den += w;
+        }
+        const trend = num / den;
+        const d = Math.sqrt(best);
+        const fade = smoothstep(14, 150, d);
+        const r = (ridge.ridged(x * 0.00085, z * 0.00085, 6) - 0.42) * 120 * fade;
+        const f = hills.fbm(x * 0.0031, z * 0.0031, 5) * 26 * fade;
+        const g = fine.fbm(x * 0.0135, z * 0.0135, 3) * 1.6 * fade;
+        this.h[j * GRID_N + i] = trend + r + f + g;
       }
     }
   }
@@ -63,6 +95,11 @@ export class Heightfield {
   /** Droplet hydraulic erosion — carves gullies that read as 石澗 tributaries. */
   private erode(rng: Rng): void {
     const N = GRID_N;
+    // Droplet erosion assumes vertical and horizontal units match. One grid step is
+    // this.cell metres across, so work in cell units and scale back afterwards —
+    // otherwise every droplet moves tens of metres of rock per step.
+    const unit = this.cell;
+    for (let i = 0; i < this.h.length; i++) this.h[i] /= unit;
     const inertia = 0.055, capacity = 3.4, deposition = 0.28, erosion = 0.32;
     const evaporation = 0.018, gravity = 10, minSlope = 0.0006, maxSteps = 42;
     const radius = 2;
@@ -133,6 +170,26 @@ export class Heightfield {
       }
       this.erodedDroplets++;
     }
+    for (let i = 0; i < this.h.length; i++) this.h[i] *= unit;
+  }
+
+  /** Separable-ish 3x3 relaxation. Keeps large forms, drops single-cell wrinkles. */
+  private smooth(passes: number, amount: number): void {
+    const N = GRID_N;
+    const tmp = new Float32Array(this.h.length);
+    for (let p = 0; p < passes; p++) {
+      tmp.set(this.h);
+      for (let j = 1; j < N - 1; j++) {
+        for (let i = 1; i < N - 1; i++) {
+          const k = j * N + i;
+          // Weights must sum to exactly 1, or every pass scales the whole massif.
+          const avg = (tmp[k - 1] + tmp[k + 1] + tmp[k - N] + tmp[k + N]) * 0.125
+                    + (tmp[k - N - 1] + tmp[k - N + 1] + tmp[k + N - 1] + tmp[k + N + 1]) * 0.0625
+                    + tmp[k] * 0.25;
+          this.h[k] = tmp[k] + (avg - tmp[k]) * amount;
+        }
+      }
+    }
   }
 
   /**
@@ -140,14 +197,9 @@ export class Heightfield {
    * outward, so no coarse triangle pokes through the apron. Also cuts the 芒草坡 cliff.
    */
   private carveCourse(course: Course): void {
-    const CORRIDOR = 4.0;      // metres of apron beyond the trail edge
-    const BLEND = 42;
-    // A query point inside a cell is at most cell*sqrt(2) from any of its corners, so a
-    // corner carved to the lowest trail surface within that radius can never interpolate
-    // above the trail. This is what stops coarse triangles covering the apron.
-    const REACH = this.cell * Math.SQRT2 * 1.15;
-    const MARGIN = 0.14;
-    const scratch: number[] = [];
+    const CORRIDOR = 11.0;     // metres of apron held flat at trail level
+    const BLEND = 50;
+    const MARGIN = 1.10;   // the corridor is a cut: terrain sits below the trail surface
     const gi = course.idx(RAVINE_S);
     const gorgeX = course.centreX(RAVINE_S), gorgeZ = course.centreZ(RAVINE_S);
     const gorgeY = course.centreY(RAVINE_S);
@@ -169,13 +221,11 @@ export class Heightfield {
           const t = smoothstep(CORRIDOR, BLEND, edge);
           target = lerp(trailY - MARGIN, this.h[k], t * t);
         }
-        const w = 1 - smoothstep(CORRIDOR, BLEND, Math.max(edge, 0));
-        this.h[k] = lerp(this.h[k], target, clamp(w, 0, 1));
-        this.trailMask[k] = clamp(w, 0, 1);
-        if (edge < REACH + halfW) {
-          const lo = course.lowestNearbySurface(x, z, REACH, scratch);
-          if (Number.isFinite(lo) && this.h[k] > lo - MARGIN) this.h[k] = lo - MARGIN;
-        }
+        const w = clamp(1 - smoothstep(CORRIDOR, BLEND, Math.max(edge, 0)), 0, 1);
+        this.h[k] = lerp(this.h[k], target, w);
+        this.trailMask[k] = w;
+        this.corridorEdge[k] = edge;
+        this.corridorSpan[k] = course.ribbonSpan(near.s, RIBBON_APRON, RIBBON_MIN_APRON) - halfW;
 
         // 竹林峽 gorge: the stream cut the trail in two. Carve it as a band across the
         // track so the ravine reads as a real hole rather than a painted gap.

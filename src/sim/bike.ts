@@ -2,7 +2,7 @@ import { World } from './world';
 import { makeSample, type SampleOut } from './course';
 import { clamp, lerp } from './rng';
 import {
-  GRAVITY, WHEELBASE, SPEED_CAP, PEDAL_TOP_SPEED, SURFACES, SECTIONS,
+  GRAVITY, WHEELBASE, SPEED_CAP, PEDAL_TOP_SPEED, SURFACES, SECTIONS, RAVINE_DEPTH,
 } from './constants';
 
 export interface RiderInput {
@@ -232,6 +232,12 @@ export class Rider {
       this.airTime += dt;
       this.groundTime = 0;
       if (this.airTime > AIR_MIN) this.airborne = true;
+    }
+
+    // Falling into 竹林峽 is a crash, not a long descent.
+    if (inVoid && this.y < gF.height + RAVINE_DEPTH - 3.5) {
+      this.crash('short of the ravine');
+      return;
     }
 
     // ---- Preload / hop.

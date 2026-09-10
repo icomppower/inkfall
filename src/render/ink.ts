@@ -32,7 +32,7 @@ export function makeInkUniforms(): InkUniforms {
     uInk: { value: INK.clone() },
     uRim: { value: RIM.clone() },
     uHatch: { value: null },
-    uHatchScale: { value: 210 },
+    uHatchScale: { value: 400 },
     uFogNear: { value: 70 },
     uFogFar: { value: 1150 },
     uShadowMap: { value: null },
@@ -51,6 +51,7 @@ uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat3 normalMatrix;
 uniform vec3 cameraPosition;
+uniform float uTime;
 in vec3 position;
 in vec3 normal;
 in vec2 uv;
@@ -78,6 +79,13 @@ void main() {
     vTint = aTint;
   #endif
   vec4 wp = model * vec4(position, 1.0);
+  #ifdef USE_SWAY
+    // uv.y carries height above the root, so the tuft bends instead of sliding.
+    float sw = uv.y * uv.y;
+    float ph = wp.x * 0.31 + wp.z * 0.26;
+    wp.x += (sin(uTime * 1.9 + ph) + 0.4 * sin(uTime * 4.3 + ph * 2.1)) * 0.17 * sw;
+    wp.z += cos(uTime * 1.5 + ph * 1.3) * 0.12 * sw;
+  #endif
   vWorldPos = wp.xyz;
   vWorldNormal = normalize(mat3(model) * normal);
   vUv = uv;
@@ -113,6 +121,11 @@ uniform vec3 cameraPosition;
 uniform float uRampOffset;
 uniform float uTone;          // material darkening, 1 = untouched
 uniform float uWetBand;       // how strongly this surface takes a wet reflection band
+uniform vec3 uTintColour;     // accent (the finish banner, the rider's 墨 mark)
+uniform float uApronTone;     // scales the trail tone back to plain ground off the edges
+#ifdef USE_MAP
+uniform sampler2D uMap;
+#endif
 in vec3 vWorldNormal;
 in vec3 vWorldPos;
 in float vViewDepth;
@@ -149,10 +162,12 @@ void main() {
   vec3 N = normalize(vWorldNormal);
   vec3 V = normalize(cameraPosition - vWorldPos);
   float ndl = dot(N, normalize(uSunDir));
-  float lit = ndl * 0.5 + 0.5 + uRampOffset - uCloudShade * 0.16;
-  lit = mix(lit * 0.74, lit, shadowFactor(vWorldPos, N));
+  // Ambient floor: without it, everything past 90° from the sun collapses into one
+  // black mass and the drawing loses its 留白.
+  float lit = ndl * 0.40 + 0.60 + uRampOffset - uCloudShade * 0.16;
+  lit = mix(lit * 0.80, lit, shadowFactor(vWorldPos, N));
   #ifdef USE_SLOPE
-    lit -= vSlope * 0.24;   // steep faces take more ink, like a brushed cliff
+    lit -= vSlope * 0.18;   // steep faces take more ink, like a brushed cliff
   #endif
 
   // Three-band toon ramp: ink-dark, mid grey, paper-white.
@@ -174,12 +189,21 @@ void main() {
                 * step(0.55, fract(vWorldPos.x * 0.09 + vWorldPos.z * 0.07 + 0.31));
   base = mix(base, mix(base, uPaper, 0.62), wetBand);
 
-  base *= uTone;
+  base *= uTone * uTintColour;
+  #ifdef USE_MAP
+    vec4 m = texture(uMap, vUv);
+    if (m.a < 0.35) discard;
+    base *= m.rgb;
+  #endif
   #ifdef USE_SURFACE_ID
     // 0 tarmac · 1 hardpack · 2 rock · 3 dirt · 4 wood · 5 stone
-    float st = vSurface < 0.5 ? 0.80 : vSurface < 1.5 ? 0.95 : vSurface < 2.5 ? 0.86
-             : vSurface < 3.5 ? 1.00 : vSurface < 4.5 ? 0.76 : 0.90;
-    base *= st;
+    float st = vSurface < 0.5 ? 0.78 : vSurface < 1.5 ? 0.93 : vSurface < 2.5 ? 0.84
+             : vSurface < 3.5 ? 1.00 : vSurface < 4.5 ? 0.74 : 0.88;
+    // uv.x spans the trail itself; beyond 1.0 is apron that must read as plain ground.
+    float t = abs(vUv.x - 0.5) * 2.0;
+    float edgeBand = smoothstep(0.66, 0.99, t) * (1.0 - smoothstep(1.02, 1.40, t));
+    float apron = smoothstep(1.02, 1.55, t);
+    base *= mix(st * mix(1.0, 0.46, edgeBand), uApronTone, apron);
   #endif
   #ifdef USE_INSTANCING
     base *= vTint;
@@ -196,10 +220,14 @@ void main() {
 `;
 
 export interface InkMaterialOptions {
+  sway?: boolean;
+  map?: THREE.Texture;
+  tint?: THREE.Color;
   slope?: boolean;
   rampOffset?: number;
   tone?: number;
   wetBand?: number;
+  apronTone?: number;
   instanced?: boolean;
   surfaceId?: boolean;
   side?: THREE.Side;
@@ -210,6 +238,8 @@ export function makeInkMaterial(shared: InkUniforms, opts: InkMaterialOptions = 
   if (opts.instanced) defines.USE_INSTANCING = true;
   if (opts.surfaceId) defines.USE_SURFACE_ID = true;
   if (opts.slope) defines.USE_SLOPE = true;
+  if (opts.sway) defines.USE_SWAY = true;
+  if (opts.map) defines.USE_MAP = true;
   const m = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     defines,
@@ -218,6 +248,9 @@ export function makeInkMaterial(shared: InkUniforms, opts: InkMaterialOptions = 
       uRampOffset: { value: opts.rampOffset ?? 0 },
       uTone: { value: opts.tone ?? 1 },
       uWetBand: { value: opts.wetBand ?? 0 },
+      uTintColour: { value: opts.tint ?? new THREE.Color(1, 1, 1) },
+      uMap: { value: opts.map ?? null },
+      uApronTone: { value: opts.apronTone ?? 1 },
     },
     vertexShader: COMMON_VERT,
     fragmentShader: COMMON_FRAG,
