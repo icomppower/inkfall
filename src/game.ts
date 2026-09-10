@@ -15,6 +15,7 @@ import { analyzeCanvas } from './render/analyze';
 import { Scenery } from './render/scenery';
 import { RiderRig } from './render/riderMesh';
 import { Weather } from './sim/weather';
+import { Pilot, AUTOPILOT } from './sim/pilot';
 import { Particles } from './render/particles';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
@@ -32,6 +33,9 @@ export class Game {
   sky: THREE.Mesh;
   scenery!: Scenery;
   weather: Weather;
+  autoPilot: Pilot;
+  autopilotOn = false;
+  rivals: Rider[] = [];
   particles!: Particles;
   terrainDropped = 0;
 
@@ -59,6 +63,7 @@ export class Game {
     this.player = new Rider(this.world, 'INK');
     this.director = new Director(this.world);
     this.weather = new Weather(this.seed);
+    this.autoPilot = new Pilot(this.world, AUTOPILOT, this.seed);
     this.input = new InputSource();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -124,6 +129,7 @@ export class Game {
       this.buildScene();
       this.group.add(this.playerRig.root);
       this.weather = new Weather(seed);
+      this.autoPilot = new Pilot(this.world, AUTOPILOT, seed);
     } else {
       this.player.reset(0);
     }
@@ -135,6 +141,7 @@ export class Game {
     this.player.checkpointS = 0;
     this.director.reset();
     this.weather.reset();
+    this.autoPilot.reset();
     this.particles.clear();
     this.flash = 0;
     this.simSteps = 0;
@@ -143,10 +150,13 @@ export class Game {
   }
 
   /** One deterministic 120 Hz tick. */
-  fixedStep(input: RiderInput): void {
-    this.lastSteer = input.steer;
+  fixedStep(rawInput: RiderInput): void {
     this.weather.step(FIXED_DT, this.player.s, this.player.speed);
     this.player.wetness = this.weather.wetness;
+    const input = this.autopilotOn
+      ? this.autoPilot.step(FIXED_DT, this.player, this.weather.wetness)
+      : rawInput;
+    this.lastSteer = input.steer;
     const landedBefore = this.player.lastLanding;
     this.player.step(FIXED_DT, input);
     if (this.player.lastLanding !== landedBefore && this.player.lastLanding) {
@@ -164,7 +174,8 @@ export class Game {
         this.player.checkpointS = CHECKPOINTS[i];
       } else break;
     }
-    this.director.step(FIXED_DT, this.player);
+    this.director.impactActive = this.flash > 0.05;
+    this.director.step(FIXED_DT, this.player, this.rivals);
     this.simSteps++;
     this.simTime += FIXED_DT;
   }

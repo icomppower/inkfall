@@ -387,7 +387,12 @@ export class Rider {
     this.trickPhaseNorm = 0;
   }
 
-  private judgeLanding(g: SampleOut): void {
+  private macroN = { x: 0, y: 1, z: 0 };
+
+  private judgeLanding(_g: SampleOut): void {
+    // Judge against the macro surface: a 300 mm ledge is a landing, a 100 mm stone is not.
+    this.world.course.macroNormal(this.s, this.lateral, this.macroN);
+    const g = { nx: this.macroN.x, ny: this.macroN.y, nz: this.macroN.z };
     // Bike up vector from pitch/roll, compared with the surface normal.
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     const cr = Math.cos(this.roll), sr = Math.sin(this.roll);

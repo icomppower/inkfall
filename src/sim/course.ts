@@ -529,6 +529,30 @@ export class Course {
     return amp * n;
   }
 
+  /** Surface without micro-relief: what a 660 mm wheel actually bridges. */
+  macroHeight(s: number, lateral: number): number {
+    if (this.isVoid(s, lateral)) return this.centreY(s) + this.featureHeight(s) - RAVINE_DEPTH;
+    return this.centreY(s) + this.featureHeight(s) + lateral * this.camberAt(s);
+  }
+
+  /** Macro surface normal — the one a landing is judged against. */
+  macroNormal(s: number, lateral: number, out: { x: number; y: number; z: number }): void {
+    const d = 0.6;
+    const dhds = (this.macroHeight(clamp(s + d, 0, COURSE_LENGTH), lateral)
+                - this.macroHeight(clamp(s - d, 0, COURSE_LENGTH), lateral)) / (2 * d);
+    const dhdl = (this.macroHeight(s, lateral + d) - this.macroHeight(s, lateral - d)) / (2 * d);
+    const i = this.idx(s);
+    const ax = this.tx[i], ay = dhds, az = this.tz[i];
+    const bx = this.rx[i], by = dhdl, bz = this.rz[i];
+    let nx = by * az - bz * ay;
+    let ny = bz * ax - bx * az;
+    let nz = bx * ay - by * ax;
+    const nl = Math.hypot(nx, ny, nz) || 1e-9;
+    nx /= nl; ny /= nl; nz /= nl;
+    if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+    out.x = nx; out.y = ny; out.z = nz;
+  }
+
   surfaceHeight(s: number, lateral: number): number {
     if (this.isVoid(s, lateral)) return this.centreY(s) + this.featureHeight(s) - RAVINE_DEPTH;
     return this.centreY(s) + this.featureHeight(s)
@@ -540,7 +564,7 @@ export class Course {
   sample(s: number, lateral: number, out: SampleOut): SampleOut {
     const sc = clamp(s, 0, COURSE_LENGTH);
     const h = this.surfaceHeight(sc, lateral);
-    const d = 0.35;
+    const d = 0.5;
     const hs1 = this.surfaceHeight(clamp(sc + d, 0, COURSE_LENGTH), lateral);
     const hs0 = this.surfaceHeight(clamp(sc - d, 0, COURSE_LENGTH), lateral);
     const hl1 = this.surfaceHeight(sc, lateral + d);
