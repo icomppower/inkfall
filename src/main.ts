@@ -11,6 +11,12 @@ const game = new Game(app, { seed, capture });
 
 if (capture) game.paused = true;
 
+// Audio can only start from a real gesture. This listener does nothing but unlock the
+// context — it never sits in front of the action the key or click was actually for.
+for (const ev of ['pointerdown', 'keydown'] as const) {
+  addEventListener(ev, () => game.audio.start(), { passive: true });
+}
+
 function frame(now: number): void {
   game.advance(now);
   game.render();
@@ -53,6 +59,11 @@ if (capture) {
     minCutGap() { return game.director.minCutGap(); },
     effects(on: boolean) { game.setEffects(on); },
     riders() { return game.race.summary(); },
+    startAudio() { game.audio.start(); return game.audio.started; },
+    mute(on: boolean) { game.audio.setMuted(on); },
+    audioLevel() { return game.audio.level(); },
+    audioDegrees() { return game.audio.lastDegrees.slice(); },
+    audioToneHz() { return game.audio.toneHz; },
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
     analyzeFrame() { game.render(); return game.analyzeFrame(); },

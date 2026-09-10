@@ -19,6 +19,7 @@ export default defineConfig({
         '--disable-lcd-text',
         '--use-angle=swiftshader',
         '--enable-webgl',
+        '--autoplay-policy=no-user-gesture-required',
         '--ignore-gpu-blocklist',
       ],
     },

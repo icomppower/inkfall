@@ -16,6 +16,7 @@ import { Scenery } from './render/scenery';
 import { RiderRig } from './render/riderMesh';
 import { Weather } from './sim/weather';
 import { Race } from './sim/race';
+import { AudioEngine } from './audio';
 import { Particles } from './render/particles';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
@@ -33,6 +34,7 @@ export class Game {
   sky: THREE.Mesh;
   scenery!: Scenery;
   weather: Weather;
+  audio: AudioEngine;
   riderRigs: RiderRig[] = [];
   particles!: Particles;
   terrainDropped = 0;
@@ -45,6 +47,8 @@ export class Game {
   firstFrameAt = 0;
   private accumulator = 0;
   private lastSteer = 0;
+  private lastBrake = 0;
+  private lastPedal = 0;
   private emitAccum = 0;
   private emitSeq = 1;
   flash = 0;
@@ -61,6 +65,7 @@ export class Game {
     this.weather = new Weather(this.seed);
     this.race = new Race(this.world, this.weather, this.seed);
     this.director = new Director(this.world);
+    this.audio = new AudioEngine(this.seed);
     this.input = new InputSource();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -145,6 +150,7 @@ export class Game {
       this.race.reset();
     }
     this.director.reset();
+    this.crashesSeen = 0;
     this.weather.reset();
     this.particles.clear();
     this.flash = 0;
@@ -157,12 +163,19 @@ export class Game {
   fixedStep(rawInput: RiderInput): void {
     this.weather.step(FIXED_DT, this.player.s, this.player.speed);
     this.lastSteer = rawInput.steer;
+    this.lastBrake = rawInput.brake;
+    this.lastPedal = rawInput.pedal;
     const landedBefore = this.player.lastLanding;
     this.race.step(FIXED_DT, rawInput);
     if (this.player.lastLanding !== landedBefore && this.player.lastLanding) {
       const ev = this.player.lastLanding;
       if (!ev.clean) this.flash = 0.9;
       this.burst(ev.crash ? 26 : 14, ev.crash ? 'spark' : 'dust');
+      this.pendingImpact = ev.crash ? 1.0 : ev.clean ? 0.45 : 0.8;
+    }
+    if (this.player.crashes !== this.crashesSeen) {
+      this.crashesSeen = this.player.crashes;
+      this.audio.crash();
     }
     this.emitContact(FIXED_DT);
     this.particles.simulate(FIXED_DT);
@@ -283,6 +296,7 @@ export class Game {
     const ui = this.input.consumeUi();
     if (ui.restart) this.restart();
     if (ui.pause) this.paused = !this.paused;
+    if (ui.mute) this.audio.toggleMute();
     if (ui.weather) this.weather.toggle();
     if (ui.effects) this.setEffects(!this.effectsOn);
   }
@@ -298,6 +312,8 @@ export class Game {
   private focus = new THREE.Vector3();
   private pokeSample = makeSample();
   private lastRenderAt = 0;
+  private pendingImpact = 0;
+  private crashesSeen = 0;
 
   render(): void {
     const now = performance.now();
@@ -307,6 +323,27 @@ export class Game {
     this.applyCamera();
     this.syncRider(dt);
     this.particles.sync();
+
+    if (this.pendingImpact > 0) {
+      this.audio.impact(this.pendingImpact, this.world.course.surfaceAt(this.player.s, this.player.lateral));
+      this.pendingImpact = 0;
+    }
+    this.audio.update({
+      speed: this.player.speed,
+      wheelRpm: this.player.wheelRpm,
+      surface: this.world.course.surfaceAt(this.player.s, this.player.lateral),
+      rough: this.pokeSample.rough,
+      brake: this.lastBrake,
+      pedal: this.lastPedal,
+      sliding: this.player.sliding,
+      airborne: this.player.airborne,
+      boosting: this.player.boosting,
+      rain: this.weather.rainIntensity,
+      s: this.player.s,
+      section: this.world.course.sectionAt(this.player.s).index,
+      crashed: this.player.phase === 'crashed',
+      finished: this.player.phase === 'finished',
+    }, dt);
 
     this.focus.copy(this.playerRig.root.position);
     this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
@@ -469,6 +506,10 @@ export class Game {
         flash: +this.flash.toFixed(3),
         speedStroke: +(this.pipeline.post.uniforms.uSpeedStroke.value as number).toFixed(3),
         frameMs: +this.frameEma.toFixed(2),
+        audioLevel: +this.audio.level().toFixed(5),
+        audioNotes: this.audio.notesPlayed,
+        audioMuted: this.audio.muted,
+        audioStarted: this.audio.started,
       },
       riders: this.race.summary(),
     };
