@@ -1,0 +1,24 @@
+{
+  "name": "inkfall",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "INKFALL 墨落大帽山 — procedural ink-wash downhill BMX race",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && node scripts/check-assets.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "check:assets": "node scripts/check-assets.mjs",
+    "test": "playwright test",
+    "perf": "node scripts/perf.mjs"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}
