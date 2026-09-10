@@ -10,7 +10,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "check:assets": "node scripts/check-assets.mjs",
     "test": "playwright test",
-    "perf": "node scripts/perf.mjs"
+    "perf": "node scripts/perf.mjs",
+    "gate": "npm run build && npm test && npm run perf"
   },
   "dependencies": {
     "three": "^0.169.0"

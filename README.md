@@ -23,5 +23,9 @@ npm install
 npm run dev      # http://localhost:5173/inkfall/
 npm run build    # tsc strict + vite build + asset guard
 npm test         # Playwright kill-gate suite
-npm run perf     # real-GPU frame pacing
+npm run perf     # real-GPU frame pacing (vsync off, 1080p, DPR 1)
+npm run gate     # build + full kill-gate suite + perf
 ```
+
+`npm test` includes a live check against the deployed page; set `INKFALL_SKIP_LIVE=1` to
+skip it offline.
