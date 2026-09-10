@@ -1,4 +1,5 @@
 import { Game } from './game';
+import { Hud, type HudModel } from './hud';
 import { DEFAULT_SEED, COURSE_LENGTH } from './sim/constants';
 import { neutralInput, type RiderInput } from './sim/bike';
 
@@ -8,8 +9,11 @@ const capture = params.get('capture') === '1';
 
 const app = document.getElementById('app')!;
 const game = new Game(app, { seed, capture });
+const hud = new Hud(app, seed);
 
-if (capture) game.paused = true;
+game.paused = true;
+hud.onStart = () => { game.audio.start(); game.race.start(); game.paused = false; };
+hud.onRestart = () => { game.restart(); hud.reset(); game.race.start(); game.paused = false; };
 
 // Audio can only start from a real gesture. This listener does nothing but unlock the
 // context — it never sits in front of the action the key or click was actually for.
@@ -17,19 +21,46 @@ for (const ev of ['pointerdown', 'keydown'] as const) {
   addEventListener(ev, () => game.audio.start(), { passive: true });
 }
 
+function hudModel(): HudModel {
+  const p = game.player;
+  return {
+    seed,
+    speedKmh: p.speed * 3.6,
+    place: game.race.placement(p),
+    time: game.race.time,
+    boost: p.boost,
+    crashes: p.crashes,
+    style: p.style,
+    s: p.s,
+    checkpoint: p.checkpoint,
+    splits: game.race.splits,
+    phase: p.phase,
+    trick: p.trick,
+    landedTrick: p.lastLanding?.trick ?? 0,
+    paused: game.paused,
+  };
+}
+
+let wasPaused = true;
 function frame(now: number): void {
   game.advance(now);
   game.render();
+  if (!capture && game.paused !== wasPaused) {
+    wasPaused = game.paused;
+    hud.showPaused(game.paused);
+  }
+  hud.update(hudModel(), game.race.summary() as never, now);
   game.input.endFrame();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
-if (capture) (window as unknown as Record<string, unknown>).__INKFALL_GAME = game;
-
 if (capture) {
+  game.paused = true;
   const scripted: RiderInput = neutralInput();
   game.input.scripted = scripted;
+  (window as unknown as Record<string, unknown>).__INKFALL_GAME = game;
+  (window as unknown as Record<string, unknown>).__INKFALL_HUD = hud;
   (window as unknown as Record<string, unknown>).__INKFALL = {
     ready: true,
     seed,
@@ -37,7 +68,7 @@ if (capture) {
     controlPointCount: game.world.course.controlPoints.length,
     erodedDroplets: game.world.terrain.erodedDroplets,
     start() { game.paused = false; game.race.start(); },
-    reset(s?: string) { game.restart(s); Object.assign(scripted, neutralInput()); },
+    reset(s?: string) { game.restart(s); hud.reset(); Object.assign(scripted, neutralInput()); },
     seek(progress: number, speed?: number) {
       const target = Math.max(0, Math.min(1, progress)) * COURSE_LENGTH;
       for (const e of game.race.entrants) {
@@ -53,17 +84,30 @@ if (capture) {
     input(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
     setInput(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
     weather(mode: 'dry' | 'rain') { game.weather.set(mode); },
+    effects(on: boolean) { game.setEffects(on); },
     autopilot(on: boolean) { game.autopilotOn = on; },
     camera(name: string | null) { game.director.forced = (name ?? null) as never; },
     cameraLog() { return game.director.cuts.map((c) => ({ ...c })); },
     minCutGap() { return game.director.minCutGap(); },
-    effects(on: boolean) { game.setEffects(on); },
-    riders() { return game.race.summary(); },
     startAudio() { game.audio.start(); return game.audio.started; },
     mute(on: boolean) { game.audio.setMuted(on); },
     audioLevel() { return game.audio.level(); },
     audioDegrees() { return game.audio.lastDegrees.slice(); },
     audioToneHz() { return game.audio.toneHz; },
+    riders() { return game.race.summary(); },
+    hud() {
+      return {
+        mode: hud.currentMode,
+        board: hud.boardVisible,
+        best: hud.best,
+        text: (document.getElementById('hud') as HTMLElement).innerText,
+      };
+    },
+    hudStart() { hud.onStart?.(); },
+    lockDpr(v: number) {
+      game.dprLocked = true;
+      game.pipeline.setSize(window.innerWidth, window.innerHeight, v);
+    },
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
     analyzeFrame() { game.render(); return game.analyzeFrame(); },

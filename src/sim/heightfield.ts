@@ -24,6 +24,10 @@ export class Heightfield {
   readonly corridorEdge = new Float32Array(GRID_N * GRID_N).fill(1e6);
   /** How far past the trail edge the ribbon reaches at that vertex's nearest track point. */
   readonly corridorSpan = new Float32Array(GRID_N * GRID_N);
+  // Nearest-track lookup, computed once in buildBase and reused by the carve.
+  private nearS = new Float32Array(GRID_N * GRID_N);
+  private nearLat = new Float32Array(GRID_N * GRID_N);
+  private nearDist = new Float32Array(GRID_N * GRID_N);
   readonly x0: number; readonly z0: number; readonly size: number; readonly cell: number;
   erodedDroplets = 0;
 
@@ -65,24 +69,46 @@ export class Heightfield {
     const m = cxs.length;
     const R2 = 90 * 90;
 
-    for (let j = 0; j < GRID_N; j++) {
-      for (let i = 0; i < GRID_N; i++) {
-        const x = this.x0 + i * this.cell;
-        const z = this.z0 + j * this.cell;
-        let num = 0, den = 0, best = Infinity;
+    // The trend is smooth, so solve it on a coarse lattice and interpolate. Doing the
+    // full 257² against every course sample costs a second of boot for no extra detail.
+    const LAT = 4;
+    const LN = Math.floor((GRID_N - 1) / LAT) + 1;
+    const trendLattice = new Float64Array(LN * LN);
+    for (let lj = 0; lj < LN; lj++) {
+      for (let li = 0; li < LN; li++) {
+        const x = this.x0 + li * LAT * this.cell;
+        const z = this.z0 + lj * LAT * this.cell;
+        let num = 0, den = 0;
         for (let c = 0; c < m; c++) {
           const dx = cxs[c] - x, dz = czs[c] - z;
-          const d2 = dx * dx + dz * dz;
-          if (d2 < best) best = d2;
           // 1/(d²+R²)² is local enough that the trend actually passes through the course.
           // A plain 1/(d²+R²) kernel sags a hundred metres below the summit.
-          const wd = 1 / (d2 + R2);
+          const wd = 1 / (dx * dx + dz * dz + R2);
           const w = wd * wd;
           num += w * cys[c];
           den += w;
         }
-        const trend = num / den;
-        const d = Math.sqrt(best);
+        trendLattice[lj * LN + li] = num / den;
+      }
+    }
+    const trendAt = (i: number, j: number): number => {
+      const fi = Math.min(i / LAT, LN - 1.0001), fj = Math.min(j / LAT, LN - 1.0001);
+      const i0 = Math.floor(fi), j0 = Math.floor(fj);
+      const u = fi - i0, v = fj - j0;
+      const a = trendLattice[j0 * LN + i0], b = trendLattice[j0 * LN + i0 + 1];
+      const c = trendLattice[(j0 + 1) * LN + i0], d = trendLattice[(j0 + 1) * LN + i0 + 1];
+      return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+    };
+
+    for (let j = 0; j < GRID_N; j++) {
+      for (let i = 0; i < GRID_N; i++) {
+        const x = this.x0 + i * this.cell;
+        const z = this.z0 + j * this.cell;
+        const trend = trendAt(i, j);
+        const near = course.nearest(x, z);
+        const k0 = j * GRID_N + i;
+        this.nearS[k0] = near.s; this.nearLat[k0] = near.lateral; this.nearDist[k0] = near.dist;
+        const d = near.dist;
         const fade = smoothstep(14, 150, d);
         const r = (ridge.ridged(x * 0.00085, z * 0.00085, 6) - 0.42) * 120 * fade;
         const f = hills.fbm(x * 0.0031, z * 0.0031, 5) * 26 * fade;
@@ -208,11 +234,11 @@ export class Heightfield {
       for (let i = 0; i < GRID_N; i++) {
         const x = this.x0 + i * this.cell;
         const z = this.z0 + j * this.cell;
-        const near = course.nearest(x, z);
+        const k = j * GRID_N + i;
+        const near = { s: this.nearS[k], lateral: this.nearLat[k], dist: this.nearDist[k] };
         const halfW = course.widthAt(near.s) * 0.5;
         const lat = clamp(near.lateral, -halfW, halfW);
         const edge = Math.abs(near.lateral) - halfW;
-        const k = j * GRID_N + i;
         if (edge > BLEND) { this.trailMask[k] = 0; continue; }
         const trailY = course.surfaceHeight(near.s, lat);
         let target = trailY - MARGIN;

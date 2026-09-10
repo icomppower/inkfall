@@ -55,6 +55,7 @@ export class Game {
   effectsOn = true;
   private frameEma = 16;
   private dprCooldown = 0;
+  dprLocked = false;
   private last = 0;
   playerRig!: RiderRig;
   private group = new THREE.Group();
@@ -380,7 +381,7 @@ export class Game {
     void cpuMs;
     this.frameEma = this.frameEma * 0.9 + Math.min(60, dt * 1000) * 0.1;
     this.dprCooldown -= 1;
-    if (this.dprCooldown > 0 || this.frames < 30) return;
+    if (this.dprLocked || this.dprCooldown > 0 || this.frames < 30) return;
     const dpr = this.pipeline.dpr;
     if (this.frameEma > 20 && dpr > 0.6) {
       this.pipeline.setSize(window.innerWidth, window.innerHeight, Math.max(0.6, dpr - 0.1));
