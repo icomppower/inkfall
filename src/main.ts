@@ -44,6 +44,8 @@ if (capture) {
     step(frames: number) { game.stepFrames(frames, scripted); },
     input(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
     setInput(partial: Partial<RiderInput>) { Object.assign(scripted, partial); },
+    weather(mode: 'dry' | 'rain') { game.weather.set(mode); },
+    effects(on: boolean) { game.setEffects(on); },
     state() { return game.state(); },
     dropTest(h: number, k?: number, c?: number) { return game.dropTest(h, k, c); },
     analyzeFrame() { game.render(); return game.analyzeFrame(); },

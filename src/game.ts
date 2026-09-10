@@ -14,6 +14,8 @@ import { makeSky } from './render/sky';
 import { analyzeCanvas } from './render/analyze';
 import { Scenery } from './render/scenery';
 import { RiderRig } from './render/riderMesh';
+import { Weather } from './sim/weather';
+import { Particles } from './render/particles';
 
 export interface GameOptions { seed?: string; capture?: boolean; }
 
@@ -29,6 +31,8 @@ export class Game {
   pipeline: InkPipeline;
   sky: THREE.Mesh;
   scenery!: Scenery;
+  weather: Weather;
+  particles!: Particles;
   terrainDropped = 0;
 
   seed: string;
@@ -39,6 +43,12 @@ export class Game {
   firstFrameAt = 0;
   private accumulator = 0;
   private lastSteer = 0;
+  private emitAccum = 0;
+  private emitSeq = 1;
+  flash = 0;
+  effectsOn = true;
+  private frameEma = 16;
+  private dprCooldown = 0;
   private last = 0;
   playerRig!: RiderRig;
   private group = new THREE.Group();
@@ -48,6 +58,7 @@ export class Game {
     this.world = new World(this.seed);
     this.player = new Rider(this.world, 'INK');
     this.director = new Director(this.world);
+    this.weather = new Weather(this.seed);
     this.input = new InputSource();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -91,6 +102,8 @@ export class Game {
     ));
     this.scenery = new Scenery(this.world, shared);
     this.group.add(this.scenery.group);
+    this.particles = new Particles(shared);
+    this.group.add(this.particles.mesh);
   }
 
   resize(): void {
@@ -110,6 +123,7 @@ export class Game {
       this.group.clear();
       this.buildScene();
       this.group.add(this.playerRig.root);
+      this.weather = new Weather(seed);
     } else {
       this.player.reset(0);
     }
@@ -120,6 +134,9 @@ export class Game {
     this.player.checkpoint = 0;
     this.player.checkpointS = 0;
     this.director.reset();
+    this.weather.reset();
+    this.particles.clear();
+    this.flash = 0;
     this.simSteps = 0;
     this.simTime = 0;
     this.accumulator = 0;
@@ -128,7 +145,18 @@ export class Game {
   /** One deterministic 120 Hz tick. */
   fixedStep(input: RiderInput): void {
     this.lastSteer = input.steer;
+    this.weather.step(FIXED_DT, this.player.s, this.player.speed);
+    this.player.wetness = this.weather.wetness;
+    const landedBefore = this.player.lastLanding;
     this.player.step(FIXED_DT, input);
+    if (this.player.lastLanding !== landedBefore && this.player.lastLanding) {
+      const ev = this.player.lastLanding;
+      if (!ev.clean) this.flash = 0.9;
+      this.burst(ev.crash ? 26 : 14, ev.crash ? 'spark' : 'dust');
+    }
+    this.emitContact(FIXED_DT);
+    this.particles.simulate(FIXED_DT);
+    this.updateEffectUniforms(FIXED_DT);
     // Checkpoint gates.
     for (let i = this.player.checkpoint; i < CHECKPOINTS.length; i++) {
       if (this.player.s >= CHECKPOINTS[i]) {
@@ -146,6 +174,51 @@ export class Game {
     const inp = input ?? this.input.sample();
     for (let i = 0; i < n; i++) this.fixedStep(inp);
     this.applyCamera();
+  }
+
+  /** Contact spray, dust and sparks. Emission is a function of sim state, not wall time. */
+  private emitContact(dt: number): void {
+    const r = this.player;
+    if (!this.effectsOn || r.airborne || r.phase !== 'riding') return;
+    const c = this.world.course;
+    const i = c.idx(r.s);
+    const x = c.centreX(r.s) + r.lateral * c.rx[i];
+    const z = c.centreZ(r.s) + r.lateral * c.rz[i];
+    const y = r.groundHeight() + 0.06;
+    const surface = c.surfaceAt(r.s, r.lateral);
+    const slip = Math.abs(r.slipAngle);
+    const wet = this.weather.wetness;
+    const rate = (slip * 26 + r.speed * 0.35) * (r.sliding ? 2.4 : 0.35);
+    this.emitAccum += rate * dt;
+    while (this.emitAccum >= 1) {
+      this.emitAccum -= 1;
+      const j = this.emitSeq++;
+      const a = (j * 2.399963) % (Math.PI * 2);
+      const sx = Math.cos(a), sz = Math.sin(a);
+      const back = -c.tx[i] * r.speed * 0.22, backZ = -c.tz[i] * r.speed * 0.22;
+      if (wet > 0.25) {
+        this.particles.emit('spray', x, y, z, back + sx * 1.6, 1.6 + (j % 5) * 0.2, backZ + sz * 1.6, 0.11, 0.45);
+      } else if (surface === 'rock' && slip > 0.2) {
+        this.particles.emit('spark', x, y, z, back + sx * 2.4, 1.9, backZ + sz * 2.4, 0.05, 0.30);
+      } else {
+        this.particles.emit('dust', x, y, z, back * 0.5 + sx * 1.1, 0.9, backZ * 0.5 + sz * 1.1, 0.16, 0.85);
+      }
+    }
+  }
+
+  private burst(n: number, kind: 'dust' | 'spark'): void {
+    if (!this.effectsOn) return;
+    const r = this.player;
+    const c = this.world.course;
+    const i = c.idx(r.s);
+    const x = c.centreX(r.s) + r.lateral * c.rx[i];
+    const z = c.centreZ(r.s) + r.lateral * c.rz[i];
+    const y = r.groundHeight() + 0.1;
+    for (let k = 0; k < n; k++) {
+      const a = (this.emitSeq++ * 2.399963) % (Math.PI * 2);
+      const sp = 1.4 + (k % 7) * 0.45;
+      this.particles.emit(kind, x, y, z, Math.cos(a) * sp, 1.4 + (k % 4) * 0.7, Math.sin(a) * sp, kind === 'spark' ? 0.06 : 0.19, 0.7);
+    }
   }
 
   applyCamera(): void {
@@ -199,21 +272,79 @@ export class Game {
       steps++;
     }
     if (steps === MAX_CATCHUP_STEPS) this.accumulator = 0;   // capped catch-up
+
+    const ui = this.input.consumeUi();
+    if (ui.restart) this.restart();
+    if (ui.pause) this.paused = !this.paused;
+    if (ui.weather) this.weather.toggle();
+    if (ui.effects) this.setEffects(!this.effectsOn);
+  }
+
+  setEffects(on: boolean): void {
+    this.effectsOn = on;
+    this.particles.enabled = on;
+    this.particles.mesh.visible = on;
+    this.pipeline.shadowsEnabled = on;
+    if (!on) this.particles.clear();
   }
 
   private focus = new THREE.Vector3();
   private pokeSample = makeSample();
+  private lastRenderAt = 0;
 
   render(): void {
+    const now = performance.now();
+    const dt = this.lastRenderAt ? Math.min(0.1, (now - this.lastRenderAt) / 1000) : 1 / 60;
+    this.lastRenderAt = now;
+
     this.applyCamera();
-    this.syncRider(1 / 60);
-    this.pipeline.shared.uTime.value = this.simTime;
-    this.pipeline.post.uniforms.uTime.value = this.simTime;
+    this.syncRider(dt);
+    this.particles.sync();
+
     this.focus.copy(this.playerRig.root.position);
     this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
     this.pipeline.render(this.scene, this.camera, this.focus, [this.sky]);
     this.frames++;
     if (this.firstFrameAt === 0) this.firstFrameAt = performance.now();
+    this.adaptDpr(performance.now() - now, dt);
+  }
+
+  /** Screen effects are deterministic functions of sim state, so they live in the tick. */
+  private updateEffectUniforms(dt: number): void {
+    const shared = this.pipeline.shared;
+    const post = this.pipeline.post.uniforms;
+    shared.uTime.value = this.simTime;
+    shared.uWetness.value = this.weather.wetness;
+    shared.uCloudShade.value = this.weather.cloudShade;
+    post.uTime.value = this.simTime;
+    post.uRain.value = this.effectsOn ? this.weather.rainIntensity : 0;
+    post.uDroplets.value = this.effectsOn ? this.weather.droplets : 0;
+    const kmh = this.player.speed * 3.6;
+    const stroke = Math.max(0, (kmh - 45) / 33) * (this.player.boosting ? 1.6 : 1);
+    post.uSpeedStroke.value = this.effectsOn ? Math.min(1.1, stroke) : 0;
+    this.flash = Math.max(0, this.flash - dt * 7.5);
+    post.uFlash.value = this.effectsOn ? Math.min(0.85, this.flash) : 0;
+    const rough = this.world.course.sample(this.player.s, this.player.lateral, this.pokeSample).rough;
+    const shake = this.player.phase === 'crashed'
+      ? 1
+      : Math.min(1, rough * this.player.speed * 0.55 + (this.player.sliding ? 0.15 : 0));
+    post.uShake.value = this.effectsOn ? shake : 0;
+  }
+
+  /** Hold frame pacing by trading resolution, 0.6 → 1.0. */
+  private adaptDpr(cpuMs: number, dt: number): void {
+    void cpuMs;
+    this.frameEma = this.frameEma * 0.9 + Math.min(60, dt * 1000) * 0.1;
+    this.dprCooldown -= 1;
+    if (this.dprCooldown > 0 || this.frames < 30) return;
+    const dpr = this.pipeline.dpr;
+    if (this.frameEma > 20 && dpr > 0.6) {
+      this.pipeline.setSize(window.innerWidth, window.innerHeight, Math.max(0.6, dpr - 0.1));
+      this.dprCooldown = 45;
+    } else if (this.frameEma < 13.5 && dpr < 1) {
+      this.pipeline.setSize(window.innerWidth, window.innerHeight, Math.min(1, dpr + 0.1));
+      this.dprCooldown = 45;
+    }
   }
 
   /**
@@ -302,6 +433,10 @@ export class Game {
         gripUsage: +p.gripUsage.toFixed(4),
         grip: +p.effectiveGrip().toFixed(4),
         wetness: +p.wetness.toFixed(4),
+        weather: this.weather.mode,
+        rainIntensity: +this.weather.rainIntensity.toFixed(4),
+        droplets: this.weather.dropletCount,
+        onsetS: +this.weather.onsetS.toFixed(1),
         compressionF: +p.compressionF.toFixed(4),
         compressionR: +p.compressionR.toFixed(4),
         boost: +p.boost.toFixed(4),
@@ -318,7 +453,12 @@ export class Game {
         scenery: this.scenery.stats,
         drawCalls: this.pipeline.geoCalls,
         triangles: this.pipeline.geoTriangles,
-        dpr: this.pipeline.dpr,
+        dpr: +this.pipeline.dpr.toFixed(2),
+        particles: this.particles.live,
+        effects: this.effectsOn,
+        flash: +this.flash.toFixed(3),
+        speedStroke: +(this.pipeline.post.uniforms.uSpeedStroke.value as number).toFixed(3),
+        frameMs: +this.frameEma.toFixed(2),
       },
       riders: [],
     };
