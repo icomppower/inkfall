@@ -1,31 +1,35 @@
-# INKFALL 墨落大帽山
+# 墨落 INKFALL — 水墨下坡
 
-A 2.3 km point-to-point downhill BMX race from the Tai Mo Shan radar station down to 川龍村,
-rendered as moving 水墨 (ink-wash): paper-white sky, brush-stroke hatch shadows, mist that
-swallows the valley in flat bands, and Hong Kong monsoon rain that rolls in mid-run.
+A standalone ink-wash edition of the playable Three.js / TypeScript downhill race with a procedural 2,300 m centerline, 485 m elevation loss, 14 sculpted kickers, three AI riders, and a hand-built alpine forest. No downloaded models, textures, music, fonts, or runtime service calls.
 
-**Live:** https://icomppower.github.io/inkfall
+This edition is a separate Site; the original INKLINE game is preserved. `app/ink.ts` contains the ink shaders, paper generator, pine mesh and mountain generator.
 
-Three.js + TypeScript + Vite. `three` is the only runtime dependency. Every mesh, texture,
-sound and music note is generated in code at boot — the repo and `dist/` contain zero asset
-files. No network at runtime.
+## Play
 
-Design spec lives in Notion; see `DIVERGENCE.md` for any departures from it.
+- W / Up: pedal. S / Down: brake and slide.
+- A / D or Left / Right: steer across the trail.
+- Space: bunny hop (press again for another hop).
+- Shift: boost; recharges over time and on landings.
+- Q / E in the air: frontflip / backflip. Release to level out before landing.
+- Escape: pause. R: restart. Touch controls are available on touch devices.
 
-## Controls
-W/↑ pedal · A D / ← → line · S/↓ brake (slide while steering) · Space hold/release preload+hop ·
-Shift boost · C manual · 1–5 tricks in air · R restart · P/Esc pause · M mute · V weather · F effects.
-Gamepad: RT pedal, LT front brake, left stick line, A hop, X boost, B manual, D-pad tricks.
+The race starts immediately. Sound begins after the Ride button gesture. Leaving the tab pauses the race. Finishing shows race position, time, and style score. Best experienced with hardware-accelerated WebGL2 and a keyboard.
 
-## Dev
-```
-npm install
-npm run dev      # http://localhost:5173/inkfall/
-npm run build    # tsc strict + vite build + asset guard
-npm test         # Playwright kill-gate suite
-npm run perf     # real-GPU frame pacing (vsync off, 1080p, DPR 1)
-npm run gate     # build + full kill-gate suite + perf
-```
+## Systems
 
-`npm test` includes a live check against the deployed page; set `INKFALL_SKIP_LIVE=1` to
-skip it offline.
+- `app/physics.ts`: fixed 120 Hz integration, independently sampled front and rear contact springs, damping, pitch torque, downhill acceleration, speed-dependent drag, wet grip, brake slides, jumps, flip rotation, landing checks, crash recovery, boost.
+- `app/world.ts`: arc-length sampled Catmull–Rom track, terrain ribbons sharing the collision height function, 800 instanced conifers, 400 rocks, mountains, rails, flags, procedural bike/rider geometry, canvas-generated start/finish lettering.
+- `app/game.ts`: three route policies (Rook inside line, Ghost smooth line, Jinx aggressive jumps), race ranking, collision nudges, follow camera, Sobel postprocessing, procedural lens-drop refraction, volumetric rain streaks, speed lines and particles.
+- `app/audio.ts`: Web Audio oscillators and seeded noise synthesize percussion, bass, arpeggios, wind, tire sounds, impacts, and landing sounds. Boost increases music tempo.
+- `app/page.tsx`, `app/globals.css`: responsive game HUD and controls.
+
+Rendering uses world-anchored ink wash density, procedural dry-brush texture, imperfect Sobel contours and feathered edge bleeding. A seeded 512 × 512 paper-fibre texture is synthesized in memory. Asymmetrical karst pillars and jagged pine canopies replace the original alpine silhouette; distant forms fade into pale paper. Vermilion accents identify the player, course flags and boost, with ink tyre trails and spray. The interface uses Traditional Chinese titles, seal typography and system serif fonts. The score uses a synthesized pentatonic motif. Weather changes continuously during a run and affects braking and lateral grip.
+
+This is a compact arcade simulation, not a full rigid-body bicycle simulator: forward progress follows the track coordinate, steering chooses a lateral line, and bicycle pose responds to two-wheel contact dynamics. Scenic trees and rocks stay outside the rideable corridor; leaving that corridor crashes the rider. Motion and physics are timestep-independent; cosmetic particles use the render delta.
+
+## Develop
+
+Use the package manager specified in `package.json`. `pnpm dev` starts the app; `pnpm build` produces the Cloudflare-compatible Site. `pnpm exec tsc --noEmit` checks TypeScript. All game dependencies are bundled; no external CDN is needed during play.
+
+
+Validation: TypeScript and production build checks are run before publication. The terrain sampling and bicycle physics are unchanged from the original. Browser visual/play testing and live WebMCP validation are unavailable in this run; the optional read-only `read_inkfall_race` tool is feature-detected and does not affect unsupported browsers.
